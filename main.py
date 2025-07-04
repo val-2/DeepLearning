@@ -1,12 +1,9 @@
-import gradio as gr
+from training import train
 
-def greet(name, intensity):
-    return "Hello, " + name + "!" * int(intensity)
-
-demo = gr.Interface(
-    fn=greet,
-    inputs=["text", "slider"],
-    outputs=["text"],
-)
-
-demo.launch()
+if __name__ == "__main__":
+    """
+    Punto di ingresso principale per avviare il training del modello.
+    """
+    print("Avvio dello script principale...")
+    train()
+    print("Esecuzione del training completata.")
