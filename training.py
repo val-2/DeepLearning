@@ -112,7 +112,7 @@ def visualize_attention(epoch, generated_image, tokens, attention_maps, descript
     plt.close(fig)
 
 
-def train_model():
+def train():
     """Funzione principale di training, compatibile con CPU, GPU e TPU."""
     # --- Fase 0: Setup Ambiente e Device ---
     if IS_XLA_AVAILABLE:
@@ -221,10 +221,10 @@ def train_model():
 def _mp_fn(rank):
     """Funzione di entry point per ogni processo XLA."""
     torch.set_default_tensor_type('torch.FloatTensor')
-    train_model()
+    train()
 
 if __name__ == "__main__":
     if IS_XLA_AVAILABLE:
         xmp.spawn(_mp_fn, nprocs=None, start_method='fork')
     else:
-        train_model()
+        train()
