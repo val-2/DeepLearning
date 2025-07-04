@@ -3,7 +3,7 @@ import urllib.request
 import zipfile
 
 def reporthook(block_num, block_size, total_size):
-    if block_num % 2048 == 0:
+    if block_num % 16384 == 0:
         print(f"Downloading... {block_num * block_size / (1024 * 1024):.2f} MB")
 
 
