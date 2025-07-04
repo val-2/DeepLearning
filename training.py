@@ -172,7 +172,11 @@ def train():
         model.train()
         if train_sampler: train_sampler.set_epoch(epoch)
 
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{NUM_EPOCHS} [Training]", disable=(rank != 0))
+        # Ottieni il loader iterabile specifico per il dispositivo.
+        # Per le TPU, questo è necessario. Per CPU/GPU, è il loader stesso.
+        device_loader = train_loader.per_device_loader(device) if IS_XLA_AVAILABLE else train_loader
+
+        pbar = tqdm(device_loader, desc=f"Epoch {epoch}/{NUM_EPOCHS} [Training]", disable=(rank != 0))
         for batch in pbar:
             token_ids, real_images = batch['text'].to(device), batch['image'].to(device)
 
