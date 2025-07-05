@@ -12,6 +12,7 @@ import glob
 # Aggiungo questo per evitare problemi con la GUI di matplotlib su server senza display
 import matplotlib
 matplotlib.use('Agg')
+from torchvision import transforms
 
 from pokemon_dataset import PokemonDataset
 from model import PikaPikaGen
@@ -30,8 +31,8 @@ NUM_VIZ_SAMPLES = 4
 
 # --- Pesi per le Loss ---
 LAMBDA_L1 = 1.0
-LAMBDA_PERCEPTUAL = 0.1
-LAMBDA_SSIM = 10.0
+LAMBDA_PERCEPTUAL = 0.02
+LAMBDA_SSIM = 1.0
 
 
 # --- Setup del Dispositivo ---
@@ -273,19 +274,44 @@ def train(resume_from_checkpoint=None, epochs_to_run=100):
     os.makedirs(IMAGE_DIR, exist_ok=True)
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    full_dataset = PokemonDataset(tokenizer=tokenizer)
 
-    train_size = int(TRAIN_VAL_SPLIT * len(full_dataset))
-    val_size = len(full_dataset) - train_size
-    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+    # Definisci le pipeline di trasformazione
+    train_transform = transforms.Compose([
+        transforms.Resize((215, 215)),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+        transforms.RandomRotation(degrees=10, fill=(255, 255, 255)), # type: ignore
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+    val_transform = transforms.Compose([
+        transforms.Resize((215, 215)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+
+    # Crea due istanze del dataset con trasformazioni diverse
+    train_dataset_instance = PokemonDataset(tokenizer=tokenizer, transform=train_transform)
+    val_dataset_instance = PokemonDataset(tokenizer=tokenizer, transform=val_transform)
+
+    # Dividi i dataset usando gli stessi indici per coerenza
+    train_size = int(TRAIN_VAL_SPLIT * len(train_dataset_instance))
+    val_size = len(train_dataset_instance) - train_size
+    generator = torch.Generator().manual_seed(42) # Per riproducibilità
+
+    train_dataset, _ = random_split(train_dataset_instance, [train_size, val_size], generator=generator)
+    # Resettiamo il generatore per ottenere la seconda parte dello split per la validazione
+    generator.manual_seed(42)
+    _, val_dataset = random_split(val_dataset_instance, [train_size, val_size], generator=generator)
+
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True)
 
     # Prendi batch fissi per visualizzazioni consistenti
-    fixed_train_batch = next(iter(DataLoader(train_dataset, batch_size=NUM_VIZ_SAMPLES, shuffle=False)))
+    fixed_train_batch_for_viz = next(iter(DataLoader(train_dataset, batch_size=NUM_VIZ_SAMPLES, shuffle=False)))
     fixed_val_batch = next(iter(DataLoader(val_dataset, batch_size=NUM_VIZ_SAMPLES, shuffle=False)))
-    fixed_train_attention_batch = next(iter(DataLoader(train_dataset, batch_size=1, shuffle=False)))
+    fixed_train_attention_batch_for_viz = next(iter(DataLoader(train_dataset, batch_size=1, shuffle=False)))
     fixed_val_attention_batch = next(iter(DataLoader(val_dataset, batch_size=1, shuffle=False)))
 
     print(f"Dataset: {len(train_dataset)} train, {len(val_dataset)} val")
@@ -390,9 +416,9 @@ def train(resume_from_checkpoint=None, epochs_to_run=100):
 
         # --- Generazione Visualizzazioni ---
         print(f"Epoch {epoch}: Generazione visualizzazioni...")
-        save_attention_visualization(epoch, model, tokenizer, fixed_train_attention_batch, DEVICE, 'train')
+        save_attention_visualization(epoch, model, tokenizer, fixed_train_attention_batch_for_viz, DEVICE, 'train')
         save_attention_visualization(epoch, model, tokenizer, fixed_val_attention_batch, DEVICE, 'val')
-        save_comparison_grid(epoch, model, fixed_train_batch, 'train', DEVICE)
+        save_comparison_grid(epoch, model, fixed_train_batch_for_viz, 'train', DEVICE)
         save_comparison_grid(epoch, model, fixed_val_batch, 'val', DEVICE)
 
     print("Training completato!")

@@ -7,7 +7,7 @@ from download_dataset import download_dataset_if_not_exists
 from pathlib import Path
 
 class PokemonDataset(Dataset):
-    def __init__(self, tokenizer, csv_path="dataset/pokedex-main/data/pokemon.csv",
+    def __init__(self, tokenizer, transform, csv_path="dataset/pokedex-main/data/pokemon.csv",
                  image_dir="dataset/pokedex-main/images/small_images",
                  max_length=128):
         """
@@ -17,8 +17,8 @@ class PokemonDataset(Dataset):
             csv_path: Percorso al file CSV con i dati
             image_dir: Directory contenente le immagini dei Pokemon
             tokenizer: Tokenizer per il preprocessing del testo (es. BERT)
+            transform: Pipeline di trasformazioni da applicare alle immagini
             max_length: Lunghezza massima delle sequenze tokenizzate
-            image_size: Dimensione target delle immagini (default 215x215)
         """
         download_dataset_if_not_exists()
 
@@ -30,14 +30,7 @@ class PokemonDataset(Dataset):
 
         self.tokenizer = tokenizer
         self.max_length = max_length
-
-        # Normalizza le immagini in [-1, 1] e le ridimensiona
-        # #804, #896, #897 e #898 hanno dimensioni diverse da 215x215
-        self.image_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),  # Normalizza a [-1, 1]
-            transforms.Resize((215, 215))
-        ])
+        self.image_transform = transform
 
     def __len__(self):
         """Restituisce il numero totale di campioni"""
@@ -146,8 +139,15 @@ if __name__ == "__main__":
     # Carica il tokenizer
     tokenizer = AutoTokenizer.from_pretrained("prajjwal1/bert-mini")
 
+    # Crea una transform di base per il test
+    test_transform = transforms.Compose([
+        transforms.Resize((215, 215)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+
     # Crea il dataset
-    dataset = PokemonDataset(tokenizer=tokenizer)
+    dataset = PokemonDataset(tokenizer=tokenizer, transform=test_transform)
 
     # Prova a caricare alcuni campioni
     print(f"Dataset size: {len(dataset)}")
