@@ -2,7 +2,6 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
-import os
 from torchvision import transforms
 from download_dataset import download_dataset_if_not_exists
 from pathlib import Path
@@ -139,37 +138,7 @@ def get_dataloader(dataset, batch_size=16, shuffle=True, num_workers=0):
         pin_memory=True  # Migliora le prestazioni con GPU
     )
 
-def collate_fn(batch):
-    """
-    Funzione personalizzata per combinare i campioni in un batch.
-    Utile se hai bisogno di logiche di batching speciali.
 
-    Args:
-        batch: Lista di campioni dal dataset
-
-    Returns:
-        Batch processato
-    """
-    # Estrai tutti i componenti
-    texts = [sample['text'] for sample in batch]
-    images = [sample['image'] for sample in batch]
-    descriptions = [sample['description'] for sample in batch]
-    attention_masks = [sample['attention_mask'] for sample in batch]
-
-    # Impila i tensor
-    text_batch = torch.stack(texts) if torch.is_tensor(texts[0]) else texts
-    image_batch = torch.stack(images)
-
-    result = {
-        'text': text_batch,
-        'image': image_batch,
-        'descriptions': descriptions,
-        'attention_mask': attention_masks,
-    }
-
-    return result
-
-# === ESEMPIO DI UTILIZZO ===
 if __name__ == "__main__":
     # Test del dataset
     from transformers import AutoTokenizer

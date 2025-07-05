@@ -2,7 +2,7 @@ import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
-from dataset import PokemonDataset
+from pokemon_dataset import PokemonDataset
 
 def test_dataset_integrity():
     """

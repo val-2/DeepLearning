@@ -58,24 +58,24 @@ class DecoderBlock(nn.Module):
     """
     Blocco del decoder con upsampling, attenzione e convoluzioni.
     """
-    def __init__(self, in_channels, out_channels, text_embed_dim=256, nhead=4, use_attention=True):
+    def __init__(self, in_channels, out_channels, text_embedding_dim=256, nhead=4, use_attention=True):
         super().__init__()
         self.use_attention = use_attention
 
         if self.use_attention:
-            if in_channels != text_embed_dim:
-                raise ValueError("in_channels must be equal to text_embed_dim for attention.")
-            self.cross_attention = CrossAttention(embed_dim=text_embed_dim, num_heads=nhead)
+            if in_channels != text_embedding_dim:
+                raise ValueError("in_channels must be equal to text_embedding_dim for attention.")
+            self.cross_attention = CrossAttention(embed_dim=text_embedding_dim, num_heads=nhead)
             # Layer per normalizzare le feature prima dell'attenzione
-            self.norm1 = nn.LayerNorm(in_channels)
+            self.layer_norm = nn.LayerNorm(in_channels)
 
         self.transpose_conv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1)
-        self.norm2 = nn.BatchNorm2d(out_channels)
+        self.batch_norm = nn.BatchNorm2d(out_channels)
         self.activation = nn.ReLU()
 
     def forward(self, x, encoder_output=None):
-        # x: (B, C, H, W)
-        # encoder_output: (B, seq_len, text_embed_dim)
+        # x: image (Batch, Channels, Height, Width)
+        # encoder_output: (Batch, Sequence Length, Text Embedding Dim)
         attn_weights = None # Inizializza a None
 
         if self.use_attention:
@@ -85,7 +85,8 @@ class DecoderBlock(nn.Module):
             B, C, H, W = x.shape
 
             # 1. Applica l'attenzione
-            x_norm = self.norm1(x.reshape(B, C, H * W).permute(0, 2, 1)) # -> (B, H*W, C)
+            x_norm = self.layer_norm(x.reshape(B, C, H * W).permute(0, 2, 1)) # -> (B, H*W, C)
+            # We need to transpose the x_norm because the MultiheadAttention expects (B, L, C)
             attn_output, attn_weights = self.cross_attention(query=x_norm, key=encoder_output, value=encoder_output)
             attn_output = attn_output.permute(0, 2, 1).reshape(B, C, H, W) # -> (B, C, H, W)
 
@@ -94,7 +95,7 @@ class DecoderBlock(nn.Module):
 
         # 2. Applica l'upsampling con convoluzione trasposta
         x = self.transpose_conv(x)
-        x = self.norm2(x)
+        x = self.batch_norm(x)
         x = self.activation(x)
         return x, attn_weights
 
