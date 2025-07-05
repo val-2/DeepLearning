@@ -29,7 +29,7 @@ NUM_VIZ_SAMPLES = 4
 # --- Pesi per le Loss ---
 LAMBDA_L1 = 1.0
 LAMBDA_PERCEPTUAL = 0.1
-LAMBDA_SSIM = 0.05
+LAMBDA_SSIM = 10.0
 
 
 # --- Setup del Dispositivo ---
