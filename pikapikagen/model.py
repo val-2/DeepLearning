@@ -182,7 +182,7 @@ class PikaPikaGen(nn.Module):
 
         self.noise_dim = noise_dim
 
-    def forward(self, token_ids, return_attentions=False):
+    def forward(self, token_ids):
         # Genera rumore casuale per il batch
         batch_size = token_ids.size(0)
         noise = torch.randn(batch_size, self.noise_dim, device=token_ids.device)
@@ -193,6 +193,55 @@ class PikaPikaGen(nn.Module):
         # 2. Genera l'immagine
         generated_image, attention_maps = self.image_decoder(noise, encoder_output)
 
-        if return_attentions:
-            return generated_image, attention_maps
-        return generated_image
+        return generated_image, encoder_output, attention_maps
+
+
+class Discriminator(nn.Module):
+    """
+    Discriminatore (Critico) che distingue tra immagini reali e generate.
+    Usa un'architettura PatchGAN e condiziona l'output sul testo.
+    """
+    def __init__(self, image_channels=3, text_embed_dim=256, channels=64):
+        super().__init__()
+
+        def _block(in_channels, out_channels, kernel_size=4, stride=2, padding: int | str = 1, norm=True, activation=True):
+            layers: list[nn.Module] = [nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, bias=not norm)]
+            if norm:
+                layers.append(nn.InstanceNorm2d(out_channels))
+            if activation:
+                layers.append(nn.LeakyReLU(0.2, inplace=True))
+            return nn.Sequential(*layers)
+
+        # Percorso per l'immagine
+        self.image_path = nn.Sequential(
+            _block(image_channels, channels, norm=False),  # 215x215 -> 108x108
+            _block(channels, channels * 2),              # 108x108 -> 54x54
+            _block(channels * 2, channels * 4),          # 54x54 -> 27x27
+            _block(channels * 4, channels * 8, stride=1, padding='same'), # 27x27 -> 27x27
+        )
+
+        # Proiezione del testo
+        self.text_projection = nn.Linear(text_embed_dim, channels * 8)
+
+        # Layer finale di classificazione
+        self.final_layer = nn.Sequential(
+            _block(channels * 8, channels * 8, stride=1, padding='same'),
+            nn.Conv2d(channels * 8, 1, kernel_size=4, stride=1, padding=1) # 27x27 -> 26x26
+        )
+
+
+    def forward(self, image, encoder_output):
+        # 1. Processa l'immagine
+        image_features = self.image_path(image) # (B, C*8, 27, 27)
+
+        # 2. Processa e proietta il testo
+        text_context = encoder_output.mean(dim=1) # (B, text_embed_dim)
+        text_features = self.text_projection(text_context) # (B, C*8)
+        text_features = text_features.unsqueeze(-1).unsqueeze(-1) # (B, C*8, 1, 1)
+        text_features = text_features.expand_as(image_features) # (B, C*8, 27, 27)
+
+        # 3. Combina le feature e classifica
+        combined_features = image_features + text_features
+        output = self.final_layer(combined_features)
+
+        return output

@@ -12,16 +12,19 @@ import matplotlib
 matplotlib.use('Agg')
 
 from pokemon_dataset import PokemonDataset
-from model import PikaPikaGen
+from model import PikaPikaGen, Discriminator
 
 # --- Parametri di Training Fissi ---
 MODEL_NAME = "prajjwal1/bert-mini"
 BATCH_SIZE = 16
 NUM_EPOCHS = 100
-LEARNING_RATE = 2e-4
+LEARNING_RATE_G = 2e-4
+LEARNING_RATE_D = 2e-4
 NOISE_DIM = 100
 TRAIN_VAL_SPLIT = 0.9
 NUM_WORKERS = 0
+# Peso per la L1 loss nella loss totale del generatore
+LAMBDA_L1 = 100.0
 # Numero di campioni da visualizzare nelle griglie di confronto
 NUM_VIZ_SAMPLES = 4
 
@@ -35,22 +38,18 @@ CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
 IMAGE_DIR = os.path.join(OUTPUT_DIR, "images")
 
 
-def save_checkpoint(epoch, model, optimizer, loss, is_best=False):
+def save_gan_checkpoint(epoch, generator, discriminator, optimizer_g, optimizer_d, loss_g, loss_d, is_best=False):
     """
-    Salva un checkpoint del modello, dell'ottimizzatore e della loss.
-
-    Args:
-        epoch (int): L'epoca corrente.
-        model (nn.Module): Il modello da salvare.
-        optimizer (torch.optim.Optimizer): L'ottimizzatore da salvare.
-        loss (float): La loss di validazione corrente.
-        is_best (bool, optional): Se True, salva il modello anche come "best_model.pth.tar".
+    Salva un checkpoint del generatore, del discriminatore e dei loro ottimizzatori.
     """
     state = {
         'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'loss': loss,
+        'generator_state_dict': generator.state_dict(),
+        'discriminator_state_dict': discriminator.state_dict(),
+        'optimizer_g_state_dict': optimizer_g.state_dict(),
+        'optimizer_d_state_dict': optimizer_d.state_dict(),
+        'loss_g': loss_g,
+        'loss_d': loss_d,
     }
     filename = os.path.join(CHECKPOINT_DIR, f"checkpoint_epoch_{epoch:03d}.pth.tar")
     torch.save(state, filename)
@@ -61,40 +60,22 @@ def save_checkpoint(epoch, model, optimizer, loss, is_best=False):
 def denormalize_image(tensor):
     """
     Denormalizza un tensore immagine dall'intervallo [-1, 1] a [0, 1] per la visualizzazione.
-
-    Args:
-        tensor (torch.Tensor): Il tensore dell'immagine, con valori in [-1, 1].
-
-    Returns:
-        torch.Tensor: Il tensore denormalizzato con valori in [0, 1].
     """
     tensor = (tensor + 1) / 2
     return tensor.clamp(0, 1)
 
-def save_attention_visualization(epoch, model, tokenizer, batch, device, set_name):
+def save_attention_visualization(epoch, generator, tokenizer, batch, device, set_name):
     """
     Genera e salva una visualizzazione dell'attenzione con layout orizzontale.
-
-    L'immagine mostra in alto l'immagine generata e in basso una griglia
-    orizzontale dove la stessa immagine è sovrapposta con mappe di calore
-    semi-trasparenti, ciascuna per uno specifico token.
-
-    Args:
-        epoch (int): L'epoca corrente.
-        model (PikaPikaGen): Il modello generatore.
-        tokenizer: Il tokenizer per decodificare i token.
-        batch (dict): Un batch (dimensione 1) di dati di validazione/training.
-        device (torch.device): Il dispositivo su cui eseguire i calcoli.
-        set_name (str): 'train' o 'val', per il titolo e nome del file.
     """
-    model.eval()
+    generator.eval()
 
     with torch.no_grad():
         token_ids = batch['text'].to(device)
         pokemon_id = batch['idx'][0]
         description = batch['description'][0]
         tokens = tokenizer.convert_ids_to_tokens(token_ids.squeeze(0))
-        generated_image, attention_maps = model(token_ids, return_attentions=True)
+        generated_image, _, attention_maps = generator(token_ids)
 
     # Usa l'ultima mappa di attenzione, è la più raffinata
     if not attention_maps:
@@ -176,18 +157,11 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device, set_nam
     plt.close(fig)
 
 
-def save_comparison_grid(epoch, model, batch, set_name, device):
+def save_comparison_grid(epoch, generator, batch, set_name, device):
     """
     Genera e salva una griglia di confronto orizzontale (reale vs. generato).
-
-    Args:
-        epoch (int): L'epoca corrente.
-        model (PikaPikaGen): Il modello generatore.
-        batch (dict): Un batch di dati (training o validazione).
-        set_name (str): 'train' o 'val', per il titolo e nome del file.
-        device (torch.device): Il dispositivo su cui eseguire i calcoli.
     """
-    model.eval()
+    generator.eval()
     token_ids = batch['text'].to(device)
     real_images = batch['image']
     pokemon_ids = batch['idx']
@@ -195,7 +169,7 @@ def save_comparison_grid(epoch, model, batch, set_name, device):
     num_images = real_images.size(0)
 
     with torch.no_grad():
-        generated_images = model(token_ids)
+        generated_images, _, _ = generator(token_ids)
 
     fig, axs = plt.subplots(2, num_images, figsize=(4 * num_images, 8.5))
     fig.suptitle(f"Epoch {epoch} - {set_name.capitalize()} Comparison", fontsize=16, y=0.98)
@@ -224,11 +198,6 @@ def save_comparison_grid(epoch, model, batch, set_name, device):
 def train():
     """
     Funzione principale per l'addestramento e la validazione del modello PikaPikaGen.
-
-    Esegue il setup del dataset, del modello, dell'ottimizzatore e della loss function.
-    Poi, cicla attraverso le epoche, eseguendo il training e la validazione.
-    Ad ogni epoca, salva i checkpoint del modello e genera un'immagine di riepilogo
-    per monitorare l'apprendimento.
     """
     print("--- Impostazioni di Training ---")
     print(f"Utilizzo del dispositivo: {DEVICE}")
@@ -254,55 +223,94 @@ def train():
 
     print(f"Dataset: {len(train_dataset)} train, {len(val_dataset)} val")
 
-    model = PikaPikaGen(text_encoder_model_name=MODEL_NAME, noise_dim=NOISE_DIM).to(DEVICE)
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, betas=(0.5, 0.999))
-    criterion = nn.L1Loss()
+    generator = PikaPikaGen(text_encoder_model_name=MODEL_NAME, noise_dim=NOISE_DIM).to(DEVICE)
+    discriminator = Discriminator().to(DEVICE)
+    optimizer_g = optim.Adam(generator.parameters(), lr=LEARNING_RATE_G, betas=(0.5, 0.999))
+    optimizer_d = optim.Adam(discriminator.parameters(), lr=LEARNING_RATE_D, betas=(0.5, 0.999))
 
-    best_val_loss = float('inf')
+    adversarial_loss = nn.BCEWithLogitsLoss()
+    reconstruction_loss = nn.L1Loss()
+
+    best_val_g_loss = float('inf')
 
     print("--- Inizio Training ---")
     for epoch in range(1, NUM_EPOCHS + 1):
-        model.train()
-        train_loss = 0.0
+        generator.train()
+        discriminator.train()
+
+        total_g_loss = 0.0
+        total_d_loss = 0.0
+
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{NUM_EPOCHS} [Training]")
         for batch in pbar:
             token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
 
-            optimizer.zero_grad()
-            generated_images = model(token_ids)
-            loss = criterion(generated_images, real_images)
-            loss.backward()
-            optimizer.step()
+            # --- 1. Addestra il Discriminatore ---
+            optimizer_d.zero_grad()
 
-            train_loss += loss.item()
-            pbar.set_postfix({'loss': loss.item()})
+            # Genera immagini finte
+            generated_images, encoder_output, _ = generator(token_ids)
 
-        avg_train_loss = train_loss / len(train_loader)
+            # Loss su immagini reali
+            d_real_pred = discriminator(real_images, encoder_output)
+            d_real_loss = adversarial_loss(d_real_pred, torch.ones_like(d_real_pred))
 
-        model.eval()
-        val_loss = 0.0
+            # Loss su immagini finte
+            d_fake_pred = discriminator(generated_images.detach(), encoder_output)
+            d_fake_loss = adversarial_loss(d_fake_pred, torch.zeros_like(d_fake_pred))
+
+            # Loss totale del discriminatore
+            d_loss = (d_real_loss + d_fake_loss) * 0.5
+            d_loss.backward()
+            optimizer_d.step()
+
+            # --- 2. Addestra il Generatore ---
+            optimizer_g.zero_grad()
+
+            # La loss avversaria del generatore
+            d_fake_pred_for_g = discriminator(generated_images, encoder_output)
+            g_adv_loss = adversarial_loss(d_fake_pred_for_g, torch.ones_like(d_fake_pred_for_g))
+
+            # La loss di ricostruzione L1
+            g_recon_loss = reconstruction_loss(generated_images, real_images)
+
+            # Loss totale del generatore
+            g_loss = g_adv_loss + LAMBDA_L1 * g_recon_loss
+            g_loss.backward()
+            optimizer_g.step()
+
+            total_g_loss += g_loss.item()
+            total_d_loss += d_loss.item()
+            pbar.set_postfix({'G_loss': g_loss.item(), 'D_loss': d_loss.item()})
+
+        avg_g_loss = total_g_loss / len(train_loader)
+        avg_d_loss = total_d_loss / len(train_loader)
+
+        # --- Validazione (opzionale, calcoliamo solo la loss del generatore) ---
+        generator.eval()
+        val_g_loss = 0.0
         with torch.no_grad():
             for batch in val_loader:
                 token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
-                generated_images = model(token_ids)
-                loss = criterion(generated_images, real_images)
-                val_loss += loss.item()
+                generated_images, _, _ = generator(token_ids)
+                g_recon_loss = reconstruction_loss(generated_images, real_images)
+                val_g_loss += g_recon_loss.item() # Usiamo L1 per la validazione, è più stabile
 
-        avg_val_loss = val_loss / len(val_loader)
-        print(f"Epoch {epoch}/{NUM_EPOCHS} -> Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        avg_val_g_loss = val_g_loss / len(val_loader)
+        print(f"Epoch {epoch}/{NUM_EPOCHS} -> Train G_Loss: {avg_g_loss:.4f}, D_Loss: {avg_d_loss:.4f}, Val G_L1_Loss: {avg_val_g_loss:.4f}")
 
         # --- Salvataggio Checkpoint ---
-        is_best = avg_val_loss < best_val_loss
+        is_best = avg_val_g_loss < best_val_g_loss
         if is_best:
-            best_val_loss = avg_val_loss
-        save_checkpoint(epoch, model, optimizer, avg_val_loss, is_best)
+            best_val_g_loss = avg_val_g_loss
+        save_gan_checkpoint(epoch, generator, discriminator, optimizer_g, optimizer_d, avg_g_loss, avg_d_loss, is_best)
 
         # --- Generazione Visualizzazioni ---
         print(f"Epoch {epoch}: Generazione visualizzazioni...")
-        save_attention_visualization(epoch, model, tokenizer, fixed_train_attention_batch, DEVICE, 'train')
-        save_attention_visualization(epoch, model, tokenizer, fixed_val_attention_batch, DEVICE, 'val')
-        save_comparison_grid(epoch, model, fixed_train_batch, 'train', DEVICE)
-        save_comparison_grid(epoch, model, fixed_val_batch, 'val', DEVICE)
+        save_attention_visualization(epoch, generator, tokenizer, fixed_train_attention_batch, DEVICE, 'train')
+        save_attention_visualization(epoch, generator, tokenizer, fixed_val_attention_batch, DEVICE, 'val')
+        save_comparison_grid(epoch, generator, fixed_train_batch, 'train', DEVICE)
+        save_comparison_grid(epoch, generator, fixed_val_batch, 'val', DEVICE)
 
     print("Training completato!")
 
