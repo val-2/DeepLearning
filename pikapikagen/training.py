@@ -414,7 +414,7 @@ def run_training_session(mode='continue', epochs=100):
         print(f"Modalità '{mode}' non riconosciuta. Usa 'train' o 'continue'.")
 
 
-if __name__ == "__main__":
+def main():
     # --- IMPOSTA QUI LA MODALITÀ DI TRAINING ---
     # Cambia la variabile 'training_mode' in 'train' per iniziare un nuovo addestramento
     # o lasciala su 'continue' per riprendere dall'ultimo checkpoint.
@@ -422,3 +422,6 @@ if __name__ == "__main__":
     num_epochs = 100
 
     run_training_session(mode=training_mode, epochs=num_epochs)
+
+if __name__ == "__main__":
+    main()
