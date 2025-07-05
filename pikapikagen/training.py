@@ -252,11 +252,11 @@ def train():
             generated_images, encoder_output, _ = generator(token_ids)
 
             # Loss su immagini reali
-            d_real_pred = discriminator(real_images, encoder_output)
+            d_real_pred = discriminator(real_images, encoder_output.detach())
             d_real_loss = adversarial_loss(d_real_pred, torch.ones_like(d_real_pred))
 
             # Loss su immagini finte
-            d_fake_pred = discriminator(generated_images.detach(), encoder_output)
+            d_fake_pred = discriminator(generated_images.detach(), encoder_output.detach())
             d_fake_loss = adversarial_loss(d_fake_pred, torch.zeros_like(d_fake_pred))
 
             # Loss totale del discriminatore
