@@ -71,7 +71,7 @@ def denormalize_image(tensor):
     tensor = (tensor + 1) / 2
     return tensor.clamp(0, 1)
 
-def save_attention_visualization(epoch, model, tokenizer, batch, device):
+def save_attention_visualization(epoch, model, tokenizer, batch, device, set_name):
     """
     Genera e salva una visualizzazione dell'attenzione con layout orizzontale.
 
@@ -83,8 +83,9 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device):
         epoch (int): L'epoca corrente.
         model (PikaPikaGen): Il modello generatore.
         tokenizer: Il tokenizer per decodificare i token.
-        batch (dict): Un batch (dimensione 1) di dati di validazione.
+        batch (dict): Un batch (dimensione 1) di dati di validazione/training.
         device (torch.device): Il dispositivo su cui eseguire i calcoli.
+        set_name (str): 'train' o 'val', per il titolo e nome del file.
     """
     model.eval()
 
@@ -133,7 +134,7 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device):
 
     # Layout principale: 2 righe. In alto l'immagine, in basso la griglia delle attenzioni
     gs_main = fig.add_gridspec(2, 1, height_ratios=[1, rows], hspace=0.4)
-    fig.suptitle(f"Epoch {epoch}: Attention for Pokémon #{pokemon_id}", fontsize=24, y=0.98)
+    fig.suptitle(f"Epoch {epoch}: Attention for Pokémon #{pokemon_id} ({set_name.capitalize()})", fontsize=24, y=0.98)
 
     # --- Riga Superiore: Immagine Generata ---
     ax_main_img = fig.add_subplot(gs_main[0])
@@ -170,7 +171,7 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device):
         fig.add_subplot(gs_attentions[row_idx, col_idx]).axis('off')
 
     plt.tight_layout(rect=(0, 0, 1, 0.95))
-    save_path = os.path.join(IMAGE_DIR, f"{epoch:03d}_attention_visualization.png")
+    save_path = os.path.join(IMAGE_DIR, f"{epoch:03d}_{set_name}_attention_visualization.png")
     plt.savefig(save_path)
     plt.close(fig)
 
@@ -246,9 +247,10 @@ def train():
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True)
 
     # Prendi batch fissi per visualizzazioni consistenti
-    fixed_train_batch = next(iter(DataLoader(train_dataset, batch_size=NUM_VIZ_SAMPLES, shuffle=True)))
+    fixed_train_batch = next(iter(DataLoader(train_dataset, batch_size=NUM_VIZ_SAMPLES, shuffle=False)))
     fixed_val_batch = next(iter(DataLoader(val_dataset, batch_size=NUM_VIZ_SAMPLES, shuffle=False)))
-    fixed_attention_batch = next(iter(DataLoader(val_dataset, batch_size=1, shuffle=True)))
+    fixed_train_attention_batch = next(iter(DataLoader(train_dataset, batch_size=1, shuffle=False)))
+    fixed_val_attention_batch = next(iter(DataLoader(val_dataset, batch_size=1, shuffle=False)))
 
     print(f"Dataset: {len(train_dataset)} train, {len(val_dataset)} val")
 
@@ -297,7 +299,8 @@ def train():
 
         # --- Generazione Visualizzazioni ---
         print(f"Epoch {epoch}: Generazione visualizzazioni...")
-        save_attention_visualization(epoch, model, tokenizer, fixed_attention_batch, DEVICE)
+        save_attention_visualization(epoch, model, tokenizer, fixed_train_attention_batch, DEVICE, 'train')
+        save_attention_visualization(epoch, model, tokenizer, fixed_val_attention_batch, DEVICE, 'val')
         save_comparison_grid(epoch, model, fixed_train_batch, 'train', DEVICE)
         save_comparison_grid(epoch, model, fixed_val_batch, 'val', DEVICE)
 
