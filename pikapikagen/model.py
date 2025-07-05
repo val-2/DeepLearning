@@ -58,7 +58,8 @@ class DecoderBlock(nn.Module):
     """
     Blocco del decoder con upsampling, attenzione e convoluzioni.
     """
-    def __init__(self, in_channels, out_channels, text_embedding_dim=256, nhead=4, use_attention=True):
+    def __init__(self, in_channels, out_channels, text_embedding_dim=256, nhead=4, use_attention=True,
+                 conv_kernel_size=4, conv_stride=2, conv_padding=1):
         super().__init__()
         self.use_attention = use_attention
 
@@ -69,7 +70,10 @@ class DecoderBlock(nn.Module):
             # Layer per normalizzare le feature prima dell'attenzione
             self.layer_norm = nn.LayerNorm(in_channels)
 
-        self.transpose_conv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1)
+        self.transpose_conv = nn.ConvTranspose2d(
+            in_channels, out_channels,
+            kernel_size=conv_kernel_size, stride=conv_stride, padding=conv_padding
+        )
         self.batch_norm = nn.BatchNorm2d(out_channels)
         self.activation = nn.ReLU()
 
@@ -110,8 +114,11 @@ class ImageDecoder(nn.Module):
         # Proiezione iniziale: combina rumore e contesto testuale
         self.initial_projection = nn.Linear(noise_dim + text_embed_dim, 256 * 4 * 4)
 
-        # Blocchi del decoder per l'upsampling
+        # Blocchi del decoder per l'upsampling.
+        # La sequenza è personalizzata per raggiungere gradualmente la dimensione finale
+        # di 215x215 senza usare un padding eccessivo.
         self.blocks = nn.ModuleList([
+            # Standard 2x upsampling
             # 4x4 -> 8x8
             DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
             # 8x8 -> 16x16
@@ -120,14 +127,15 @@ class ImageDecoder(nn.Module):
             DecoderBlock(in_channels=256, out_channels=128, use_attention=True),
             # 32x32 -> 64x64
             DecoderBlock(in_channels=128, out_channels=64, use_attention=False),
-            # 64x64 -> 128x128
-            DecoderBlock(in_channels=64, out_channels=32, use_attention=False),
+            # Upsampling personalizzato per raggiungere la dimensione intermedia di 108x108
+            # 64x64 -> 108x108
+            DecoderBlock(in_channels=64, out_channels=32, use_attention=False,
+                         conv_kernel_size=4, conv_stride=2, conv_padding=11),
         ])
 
         # Layer finale per portare alla dimensione giusta e ai canali RGB
-        self.final_conv = nn.ConvTranspose2d(32, final_image_channels, kernel_size=4, stride=2, padding=1)
-        # Upsample per raggiungere la dimensione esatta di 215x215
-        self.final_upsample = nn.Upsample(size=(215, 215), mode='bilinear', align_corners=False)
+        # Da 108x108 a 215x215
+        self.final_conv = nn.ConvTranspose2d(32, final_image_channels, kernel_size=3, stride=2, padding=1, output_padding=0)
         self.final_activation = nn.Tanh()
 
     def forward(self, noise, encoder_output):
@@ -148,8 +156,7 @@ class ImageDecoder(nn.Module):
                 attention_maps.append(attn_weights)
 
         # 4. Layer finale
-        x = self.final_conv(x) # -> (B, 3, 256, 256)
-        x = self.final_upsample(x) # -> (B, 3, 215, 215)
+        x = self.final_conv(x) # -> (B, 3, 215, 215)
         x = self.final_activation(x) # Mappa i valori in [-1, 1]
 
         return x, attention_maps
