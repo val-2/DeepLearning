@@ -444,7 +444,7 @@ def main():
     # --- IMPOSTA QUI LA MODALITÀ DI TRAINING ---
     # Cambia la variabile 'training_mode' in 'train' per iniziare un nuovo addestramento
     # o lasciala su 'continue' per riprendere dall'ultimo checkpoint.
-    training_mode = 'continue'
+    training_mode = 'train'
     num_epochs = 100
 
     run_training_session(mode=training_mode, epochs=num_epochs)
