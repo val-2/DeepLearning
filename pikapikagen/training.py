@@ -90,7 +90,7 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device):
 
     with torch.no_grad():
         token_ids = batch['text'].to(device)
-        pokemon_id = batch['id'][0]
+        pokemon_id = batch['idx'][0]
         description = batch['description'][0]
         tokens = tokenizer.convert_ids_to_tokens(token_ids.squeeze(0))
         generated_image, attention_maps = model(token_ids, return_attentions=True)
@@ -189,7 +189,7 @@ def save_comparison_grid(epoch, model, batch, set_name, device):
     model.eval()
     token_ids = batch['text'].to(device)
     real_images = batch['image']
-    pokemon_ids = batch['id']
+    pokemon_ids = batch['idx']
     descriptions = batch['description']
     num_images = real_images.size(0)
 
