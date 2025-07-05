@@ -1,0 +1,1 @@
+- Provare a fare architettura di decoder simile a unet

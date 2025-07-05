@@ -16,7 +16,6 @@ from torchvision import transforms
 
 from pokemon_dataset import PokemonDataset
 from model import PikaPikaGen
-from losses import VGGPerceptualLoss, SSIMLoss
 
 # --- Parametri di Training Fissi ---
 MODEL_NAME = "prajjwal1/bert-mini"
@@ -28,12 +27,6 @@ TRAIN_VAL_SPLIT = 0.9
 NUM_WORKERS = 0
 # Numero di campioni da visualizzare nelle griglie di confronto
 NUM_VIZ_SAMPLES = 4
-
-# --- Pesi per le Loss ---
-LAMBDA_L1 = 1.0
-LAMBDA_PERCEPTUAL = 0.021
-LAMBDA_SSIM = 0.0
-
 
 # --- Setu del Dispositivo ---
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -319,8 +312,6 @@ def train(resume_from_checkpoint=None, epochs_to_run=100):
     model = PikaPikaGen(text_encoder_model_name=MODEL_NAME, noise_dim=NOISE_DIM).to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, betas=(0.5, 0.999))
     criterion_l1 = nn.L1Loss()
-    criterion_perceptual = VGGPerceptualLoss(device=DEVICE)
-    criterion_ssim = SSIMLoss()
 
     start_epoch = 1
     best_val_loss = float('inf')
@@ -345,7 +336,7 @@ def train(resume_from_checkpoint=None, epochs_to_run=100):
 
     for epoch in range(start_epoch, final_epoch + 1):
         model.train()
-        train_loss, train_l1, train_perceptual, train_ssim = 0.0, 0.0, 0.0, 0.0
+        train_loss = 0.0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{final_epoch} [Training]")
         for batch in pbar:
             token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
@@ -353,60 +344,30 @@ def train(resume_from_checkpoint=None, epochs_to_run=100):
             optimizer.zero_grad()
             generated_images = model(token_ids)
 
-            l1_loss = criterion_l1(generated_images, real_images)
-            perceptual_loss = criterion_perceptual(generated_images, real_images)
-            ssim_loss = criterion_ssim(generated_images, real_images)
-
-            loss = (LAMBDA_L1 * l1_loss +
-                    LAMBDA_PERCEPTUAL * perceptual_loss +
-                    LAMBDA_SSIM * ssim_loss)
+            loss = criterion_l1(generated_images, real_images)
 
             loss.backward()
             optimizer.step()
 
             train_loss += loss.item()
-            train_l1 += l1_loss.item()
-            train_perceptual += perceptual_loss.item()
-            train_ssim += ssim_loss.item()
-            pbar.set_postfix({
-                'loss': loss.item(),
-                'l1': l1_loss.item(),
-                'p': perceptual_loss.item(),
-                's': ssim_loss.item()
-            })
+            pbar.set_postfix({'loss': loss.item()})
 
         avg_train_loss = train_loss / len(train_loader)
-        avg_train_l1 = train_l1 / len(train_loader)
-        avg_train_perceptual = train_perceptual / len(train_loader)
-        avg_train_ssim = train_ssim / len(train_loader)
 
         model.eval()
-        val_loss, val_l1, val_perceptual, val_ssim = 0.0, 0.0, 0.0, 0.0
+        val_loss = 0.0
         with torch.no_grad():
             for batch in val_loader:
                 token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
                 generated_images = model(token_ids)
 
-                l1_loss = criterion_l1(generated_images, real_images)
-                perceptual_loss = criterion_perceptual(generated_images, real_images)
-                ssim_loss = criterion_ssim(generated_images, real_images)
-
-                loss = (LAMBDA_L1 * l1_loss +
-                        LAMBDA_PERCEPTUAL * perceptual_loss +
-                        LAMBDA_SSIM * ssim_loss)
+                loss = criterion_l1(generated_images, real_images)
 
                 val_loss += loss.item()
-                val_l1 += l1_loss.item()
-                val_perceptual += perceptual_loss.item()
-                val_ssim += ssim_loss.item()
 
         avg_val_loss = val_loss / len(val_loader)
-        avg_val_l1 = val_l1 / len(val_loader)
-        avg_val_perceptual = val_perceptual / len(val_loader)
-        avg_val_ssim = val_ssim / len(val_loader)
 
-        print(f"Epoch {epoch}/{final_epoch} -> Train Loss: {avg_train_loss:.4f} (L1: {avg_train_l1:.4f}, P: {avg_train_perceptual:.4f}, S: {avg_train_ssim:.4f})")
-        print(f"                  -> Val Loss:   {avg_val_loss:.4f} (L1: {avg_val_l1:.4f}, P: {avg_val_perceptual:.4f}, S: {avg_val_ssim:.4f})")
+        print(f"Epoch {epoch}/{final_epoch} -> Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
 
         # --- Salvataggio Checkpoint ---
         is_best = avg_val_loss < best_val_loss
