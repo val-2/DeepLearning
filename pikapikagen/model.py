@@ -107,55 +107,56 @@ class DecoderBlock(nn.Module):
 class ImageDecoder(nn.Module):
     """
     Decoder CNN (Generatore) che sintetizza l'immagine.
+    Versione potenziata "XL" per la massima capacità.
     """
     def __init__(self, noise_dim, text_embed_dim, final_image_channels=3):
         super().__init__()
 
-        # Proiezione iniziale: combina rumore e contesto testuale
-        self.initial_projection = nn.Linear(noise_dim + text_embed_dim, 256 * 4 * 4)
+        # Proiezione iniziale ancora più grande.
+        self.initial_projection = nn.Linear(noise_dim + text_embed_dim, 1024 * 4 * 4)
 
         # Blocchi del decoder per l'upsampling.
-        # La sequenza è stata approfondita per rendere l'upsampling più graduale
-        # e per mantenere più canali nelle prime fasi.
+        # Architettura ancora più ampia.
         self.blocks = nn.ModuleList([
             # 4x4 -> 8x8
-            DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
+            DecoderBlock(in_channels=1024, out_channels=512, use_attention=False),
             # 8x8 -> 16x16
-            DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
-            # 16x16 -> 32x32
-            DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
+            DecoderBlock(in_channels=512, out_channels=512, use_attention=False),
+            # 16x16 -> 32x32. Riduciamo a 256 per poter usare l'attention.
+            DecoderBlock(in_channels=512, out_channels=256, use_attention=False),
             # 32x32 -> 64x64
-            DecoderBlock(in_channels=256, out_channels=128, use_attention=True),
-            # Upsampling personalizzato per raggiungere la dimensione intermedia di 108x108
-            # 64x64 -> 108x108
-            DecoderBlock(in_channels=128, out_channels=64, use_attention=False,
-                         conv_kernel_size=4, conv_stride=2, conv_padding=11),
+            DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
+            # 64x64 -> 128x128
+            DecoderBlock(in_channels=256, out_channels=128, use_attention=False),
+            # 128x128 -> 256x256
+            DecoderBlock(in_channels=128, out_channels=64, use_attention=False),
         ])
 
-        # Layer finale per portare alla dimensione giusta e ai canali RGB
-        # Da 108x108 a 215x215
-        self.final_conv = nn.ConvTranspose2d(64, final_image_channels, kernel_size=3, stride=2, padding=1, output_padding=0)
+        # Layer finale per portare ai canali RGB e rifinire l'output.
+        self.final_conv = nn.Conv2d(64, final_image_channels, kernel_size=3, stride=1, padding='same')
         self.final_activation = nn.Tanh()
 
     def forward(self, noise, encoder_output):
         # 1. Prepara il vettore di input iniziale
-        # Calcola un singolo vettore di contesto dal testo
         context_vector = encoder_output.mean(dim=1)
         initial_input = torch.cat([noise, context_vector], dim=1)
 
         # 2. Proietta e rimodella per iniziare la sequenza di convoluzioni
         x = self.initial_projection(initial_input)
-        x = x.view(x.size(0), 256, 4, 4) # -> (B, 256, 4, 4)
+        x = x.view(x.size(0), 1024, 4, 4) # -> (B, 1024, 4, 4)
 
         # 3. Passa attraverso i blocchi del decoder
         attention_maps = []
         for block in self.blocks:
-            x, attn_weights = block(x, encoder_output if block.use_attention else None)
+            # Passa l'encoder_output solo se il blocco usa l'attenzione
+            encoder_ctx = encoder_output if block.use_attention else None
+            x, attn_weights = block(x, encoder_ctx)
+
             if attn_weights is not None:
                 attention_maps.append(attn_weights)
 
         # 4. Layer finale
-        x = self.final_conv(x) # -> (B, 3, 215, 215)
+        x = self.final_conv(x) # -> (B, 3, 256, 256)
         x = self.final_activation(x) # Mappa i valori in [-1, 1]
 
         return x, attention_maps

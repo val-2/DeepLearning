@@ -31,11 +31,11 @@ NUM_VIZ_SAMPLES = 4
 
 # --- Pesi per le Loss ---
 LAMBDA_L1 = 1.0
-LAMBDA_PERCEPTUAL = 0.02
-LAMBDA_SSIM = 1.0
+LAMBDA_PERCEPTUAL = 0.021
+LAMBDA_SSIM = 0.0
 
 
-# --- Setup del Dispositivo ---
+# --- Setu del Dispositivo ---
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # --- Directory per l'Output ---
@@ -277,7 +277,7 @@ def train(resume_from_checkpoint=None, epochs_to_run=100):
 
     # Definisci le pipeline di trasformazione
     train_transform = transforms.Compose([
-        transforms.Resize((215, 215)),
+        transforms.Resize((256, 256)),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
         transforms.RandomRotation(degrees=10, fill=(255, 255, 255)), # type: ignore
@@ -285,7 +285,7 @@ def train(resume_from_checkpoint=None, epochs_to_run=100):
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
     val_transform = transforms.Compose([
-        transforms.Resize((215, 215)),
+        transforms.Resize((256, 256)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])

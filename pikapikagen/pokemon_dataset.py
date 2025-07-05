@@ -93,7 +93,7 @@ class PokemonDataset(Dataset):
         except Exception as e:
             print(f"Errore nel caricamento dell'immagine {image_path}: {e}")
             # Crea un tensor vuoto come fallback
-            image_tensor = torch.zeros(3, 215, 215)
+            image_tensor = torch.zeros(3, 256, 256)
 
         # Costruisce il risultato
         sample = {
@@ -141,7 +141,7 @@ if __name__ == "__main__":
 
     # Crea una transform di base per il test
     test_transform = transforms.Compose([
-        transforms.Resize((215, 215)),
+        transforms.Resize((256, 256)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
