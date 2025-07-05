@@ -7,6 +7,8 @@ from transformers import AutoTokenizer
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
+import argparse
+import glob
 # Aggiungo questo per evitare problemi con la GUI di matplotlib su server senza display
 import matplotlib
 matplotlib.use('Agg')
@@ -39,6 +41,34 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 OUTPUT_DIR = "training_output"
 CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
 IMAGE_DIR = os.path.join(OUTPUT_DIR, "images")
+
+
+def find_latest_checkpoint(checkpoint_dir):
+    """Trova l'ultimo checkpoint in una directory basandosi sul numero di epoca nel nome del file."""
+    list_of_files = glob.glob(os.path.join(checkpoint_dir, 'checkpoint_epoch_*.pth.tar'))
+    if not list_of_files:
+        return None
+    # Estrae il numero di epoca dal nome del file e trova il massimo
+    try:
+        latest_file = max(list_of_files, key=lambda f: int(os.path.basename(f).split('_')[-1].split('.')[0]))
+        return latest_file
+    except (ValueError, IndexError):
+        # In caso di nomi di file non standard, restituisce None
+        print("Attenzione: impossibile determinare l'ultimo checkpoint a causa di nomi file non standard.")
+        return None
+
+def continue_training(additional_epochs=100):
+    """
+    Funzione per continuare l'addestramento dall'ultimo checkpoint disponibile.
+    """
+    print("--- Ricerca dell'ultimo checkpoint ---")
+    latest_checkpoint = find_latest_checkpoint(CHECKPOINT_DIR)
+
+    if latest_checkpoint:
+        print(f"Trovato checkpoint: {latest_checkpoint}")
+        train(resume_from_checkpoint=latest_checkpoint, epochs_to_run=additional_epochs)
+    else:
+        print("Nessun checkpoint trovato per continuare. Avvia un nuovo training con 'train'.")
 
 
 def save_checkpoint(epoch, model, optimizer, loss, is_best=False):
@@ -227,7 +257,7 @@ def save_comparison_grid(epoch, model, batch, set_name, device):
     plt.close(fig)
 
 
-def train():
+def train(resume_from_checkpoint=None, epochs_to_run=100):
     """
     Funzione principale per l'addestramento e la validazione del modello PikaPikaGen.
 
@@ -266,13 +296,31 @@ def train():
     criterion_perceptual = VGGPerceptualLoss(device=DEVICE)
     criterion_ssim = SSIMLoss()
 
+    start_epoch = 1
     best_val_loss = float('inf')
 
-    print("--- Inizio Training ---")
-    for epoch in range(1, NUM_EPOCHS + 1):
+    if resume_from_checkpoint and os.path.exists(resume_from_checkpoint):
+        print(f"--- Ripresa del training dal checkpoint: {resume_from_checkpoint} ---")
+        checkpoint = torch.load(resume_from_checkpoint, map_location=DEVICE)
+
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        # Usa .get() per retrocompatibilità se la loss non era salvata
+        best_val_loss = checkpoint.get('loss', float('inf'))
+
+        print(f"Checkpoint caricato. Si riparte dall'epoca {start_epoch}.")
+        print(f"Miglior loss di validazione precedente: {best_val_loss:.4f}")
+    elif resume_from_checkpoint:
+        print(f"Attenzione: Checkpoint non trovato in {resume_from_checkpoint}. Si inizia un nuovo training.")
+
+    final_epoch = start_epoch + epochs_to_run - 1
+    print(f"--- Inizio Training (Epoche da {start_epoch} a {final_epoch}) ---")
+
+    for epoch in range(start_epoch, final_epoch + 1):
         model.train()
         train_loss, train_l1, train_perceptual, train_ssim = 0.0, 0.0, 0.0, 0.0
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{NUM_EPOCHS} [Training]")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{final_epoch} [Training]")
         for batch in pbar:
             token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
 
@@ -331,7 +379,7 @@ def train():
         avg_val_perceptual = val_perceptual / len(val_loader)
         avg_val_ssim = val_ssim / len(val_loader)
 
-        print(f"Epoch {epoch}/{NUM_EPOCHS} -> Train Loss: {avg_train_loss:.4f} (L1: {avg_train_l1:.4f}, P: {avg_train_perceptual:.4f}, S: {avg_train_ssim:.4f})")
+        print(f"Epoch {epoch}/{final_epoch} -> Train Loss: {avg_train_loss:.4f} (L1: {avg_train_l1:.4f}, P: {avg_train_perceptual:.4f}, S: {avg_train_ssim:.4f})")
         print(f"                  -> Val Loss:   {avg_val_loss:.4f} (L1: {avg_val_l1:.4f}, P: {avg_val_perceptual:.4f}, S: {avg_val_ssim:.4f})")
 
         # --- Salvataggio Checkpoint ---
@@ -350,5 +398,27 @@ def train():
     print("Training completato!")
 
 
+def run_training_session(mode='continue', epochs=100):
+    """
+    Funzione principale per avviare o continuare il training.
+
+    Args:
+        mode (str): 'train' per iniziare da zero, 'continue' per riprendere.
+        epochs (int): Numero di epoche per cui addestrare.
+    """
+    if mode == 'train':
+        train(epochs_to_run=epochs)
+    elif mode == 'continue':
+        continue_training(additional_epochs=epochs)
+    else:
+        print(f"Modalità '{mode}' non riconosciuta. Usa 'train' o 'continue'.")
+
+
 if __name__ == "__main__":
-    train()
+    # --- IMPOSTA QUI LA MODALITÀ DI TRAINING ---
+    # Cambia la variabile 'training_mode' in 'train' per iniziare un nuovo addestramento
+    # o lasciala su 'continue' per riprendere dall'ultimo checkpoint.
+    training_mode = 'continue'
+    num_epochs = 100
+
+    run_training_session(mode=training_mode, epochs=num_epochs)
