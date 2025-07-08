@@ -311,7 +311,7 @@ def train(epochs_to_run=100, resume_from_checkpoint=False):
             token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
 
             optimizer.zero_grad()
-            generated_images, _ = model(token_ids)
+            generated_images, _ = model(token_ids, return_attentions=False)
             loss = criterion(generated_images, real_images)
             loss.backward()
             optimizer.step()
@@ -326,7 +326,7 @@ def train(epochs_to_run=100, resume_from_checkpoint=False):
         with torch.no_grad():
             for batch in val_loader:
                 token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
-                generated_images, _ = model(token_ids)
+                generated_images, _ = model(token_ids, return_attentions=False)
                 loss = criterion(generated_images, real_images)
                 val_loss += loss.item()
 

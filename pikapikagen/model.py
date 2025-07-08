@@ -212,4 +212,6 @@ class PikaPikaGen(nn.Module):
 
         if return_attentions:
             return generated_image, attention_maps
-        return generated_image
+
+        # Ritorna sempre una tupla per coerenza con il ciclo di training
+        return generated_image, None
