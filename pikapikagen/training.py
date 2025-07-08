@@ -74,16 +74,22 @@ def save_checkpoint(epoch, model, optimizer, loss, is_best=False):
 
 def denormalize_image(tensor):
     """
-    Denormalizza un tensore immagine dall'intervallo [-1, 1] a [0, 1] per la visualizzazione.
-
-    Args:
-        tensor (torch.Tensor): Il tensore dell'immagine, con valori in [-1, 1].
-
-    Returns:
-        torch.Tensor: Il tensore denormalizzato con valori in [0, 1].
+    Denormalizza un tensore di immagine normalizzato nell'intervallo [-1, 1]
+    riportandolo nell'intervallo [0, 1].
     """
-    tensor = (tensor + 1) / 2
-    return tensor.clamp(0, 1)
+    # Controlla se il tensore è 3D (C, H, W) e aggiunge una dimensione batch temporanea
+    is_3d = tensor.dim() == 3
+    if is_3d:
+        tensor = tensor.unsqueeze(0)
+
+    # Denormalizzazione
+    denormalized = (tensor * 0.5) + 0.5
+
+    # Rimuove la dimensione batch se è stata aggiunta
+    if is_3d:
+        denormalized = denormalized.squeeze(0)
+
+    return denormalized
 
 def save_attention_visualization(epoch, model, tokenizer, batch, device, set_name):
     """
@@ -235,21 +241,21 @@ def save_comparison_grid(epoch, model, batch, set_name, device):
     plt.close(fig)
 
 
-def train(epochs_to_run=100, resume_from_checkpoint=False):
+def train(epochs_to_run=200, resume_from_checkpoint=None):
     """
-    Funzione principale per l'addestramento e la validazione del modello PikaPikaGen.
+    Funzione principale per il training del modello PikaPikaGen.
 
-    Esegue il setup del dataset, del modello, dell'ottimizzatore e della loss function.
-    Poi, cicla attraverso le epoche, eseguendo il training e la validazione.
-    Ad ogni epoca, salva i checkpoint del modello e genera un'immagine di riepilogo
-    per monitorare l'apprendimento.
+    Args:
+        epochs_to_run (int): Il numero totale di epoche per cui addestrare il modello.
+        resume_from_checkpoint (bool, optional): Controlla la ripresa del training.
+            - True: Tenta di riprendere dall'ultimo checkpoint. Solleva un errore se non ne trova.
+            - False: Inizia un nuovo training, ignorando i checkpoint esistenti.
+            - None (default): Riprende automaticamente se un checkpoint viene trovato, altrimenti inizia un nuovo training.
     """
-    print("--- Impostazioni di Training ---")
-    print(f"Utilizzo del dispositivo: {DEVICE}")
-
+    # Assicura che la directory per i checkpoint esista
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    os.makedirs(IMAGE_DIR, exist_ok=True)
 
+    # Setup del dataset e dei dataloader
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     full_dataset = PokemonDataset(tokenizer=tokenizer)
 
@@ -280,25 +286,44 @@ def train(epochs_to_run=100, resume_from_checkpoint=False):
 
     print(f"Dataset: {len(train_dataset)} train, {len(val_dataset)} val")
 
-    model = PikaPikaGen(text_encoder_model_name=MODEL_NAME, noise_dim=NOISE_DIM).to(DEVICE)
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, betas=(0.5, 0.999))
-    criterion = nn.L1Loss()
+    # Inizializza il modello e l'ottimizzatore
+    model = PikaPikaGen(noise_dim=NOISE_DIM).to(DEVICE)
+    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
 
     start_epoch = 1
-    best_val_loss = float('inf')
 
-    if resume_from_checkpoint:
-        latest_checkpoint_path = find_latest_checkpoint(CHECKPOINT_DIR)
+    # Logica per riprendere il training da un checkpoint
+    checkpoints = glob.glob(os.path.join(CHECKPOINT_DIR, "pikapikagen_epoch_*.pth"))
+    latest_checkpoint_path = max(checkpoints, key=os.path.getctime) if checkpoints else None
+
+    should_load_checkpoint = False
+    if resume_from_checkpoint is True:
+        if not latest_checkpoint_path:
+            raise FileNotFoundError("`resume_from_checkpoint` è True, ma nessun checkpoint è stato trovato.")
+        should_load_checkpoint = True
+    elif resume_from_checkpoint is None:
         if latest_checkpoint_path:
-            print(f"--- Ripresa del training dal checkpoint: {latest_checkpoint_path} ---")
-            checkpoint = torch.load(latest_checkpoint_path, map_location=DEVICE)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            start_epoch = checkpoint['epoch'] + 1
-            best_val_loss = checkpoint.get('loss', float('inf'))
-            print(f"Checkpoint caricato. Si riparte dall'epoca {start_epoch}.")
+            print("Trovato un checkpoint esistente. Riprendo automaticamente il training.")
+            should_load_checkpoint = True
         else:
-            print("Nessun checkpoint trovato. Si avvia un nuovo training.")
+            print("Nessun checkpoint trovato. Inizio un nuovo training.")
+    # Se resume_from_checkpoint è False, `should_load_checkpoint` rimane False e si inizia da capo.
+
+    if should_load_checkpoint and latest_checkpoint_path:
+        print(f"Caricamento del checkpoint: {latest_checkpoint_path}")
+        checkpoint = torch.load(latest_checkpoint_path, map_location=DEVICE)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint.get('epoch', 0) + 1  # Fallback a 0 se 'epoch' non è nel dict
+        print(f"Ripresa del training dall'epoca {start_epoch}")
+
+    criterion = nn.L1Loss()
+
+    # Seeding per la riproducibilità delle visualizzazioni
+    torch.manual_seed(42)
+    torch.cuda.manual_seed(42)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
     final_epoch = start_epoch + epochs_to_run - 1
     print(f"--- Inizio Training (Epoche da {start_epoch} a {final_epoch}) ---")
