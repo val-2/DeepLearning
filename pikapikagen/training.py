@@ -291,6 +291,7 @@ def train(epochs_to_run=200, resume_from_checkpoint=None):
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
 
     start_epoch = 1
+    best_val_loss = float('inf')
 
     # Logica per riprendere il training da un checkpoint
     checkpoints = glob.glob(os.path.join(CHECKPOINT_DIR, "pikapikagen_epoch_*.pth"))
@@ -314,8 +315,9 @@ def train(epochs_to_run=200, resume_from_checkpoint=None):
         checkpoint = torch.load(latest_checkpoint_path, map_location=DEVICE)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint.get('epoch', 0) + 1  # Fallback a 0 se 'epoch' non è nel dict
-        print(f"Ripresa del training dall'epoca {start_epoch}")
+        start_epoch = checkpoint.get('epoch', 0) + 1
+        best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+        print(f"Ripresa del training dall'epoca {start_epoch} con best_val_loss: {best_val_loss:.4f}")
 
     criterion = nn.L1Loss()
 
