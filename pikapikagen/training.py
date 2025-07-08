@@ -10,6 +10,7 @@ import numpy as np
 # Aggiungo questo per evitare problemi con la GUI di matplotlib su server senza display
 import matplotlib
 matplotlib.use('Agg')
+from torchvision import transforms
 
 from pokemon_dataset import PokemonDataset
 from model import PikaPikaGen

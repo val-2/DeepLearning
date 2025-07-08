@@ -126,15 +126,15 @@ class ImageDecoder(nn.Module):
             DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
             # 32x32 -> 64x64
             DecoderBlock(in_channels=256, out_channels=128, use_attention=True),
-            # Upsampling personalizzato per raggiungere la dimensione intermedia di 108x108
-            # 64x64 -> 108x108
-            DecoderBlock(in_channels=128, out_channels=64, use_attention=False,
-                         conv_kernel_size=4, conv_stride=2, conv_padding=11),
+            # 64x64 -> 128x128
+            DecoderBlock(in_channels=128, out_channels=64, use_attention=False),
+            # 128x128 -> 256x256
+            DecoderBlock(in_channels=64, out_channels=32, use_attention=False),
         ])
 
-        # Layer finale per portare alla dimensione giusta e ai canali RGB
-        # Da 108x108 a 215x215
-        self.final_conv = nn.ConvTranspose2d(64, final_image_channels, kernel_size=3, stride=2, padding=1, output_padding=0)
+        # Layer finale per portare ai canali RGB
+        # Da 256x256 a 256x256 (solo cambio di canali)
+        self.final_conv = nn.Conv2d(32, final_image_channels, kernel_size=3, stride=1, padding=1)
         self.final_activation = nn.Tanh()
 
     def forward(self, noise, encoder_output):
@@ -155,7 +155,7 @@ class ImageDecoder(nn.Module):
                 attention_maps.append(attn_weights)
 
         # 4. Layer finale
-        x = self.final_conv(x) # -> (B, 3, 215, 215)
+        x = self.final_conv(x) # -> (B, 3, 256, 256)
         x = self.final_activation(x) # Mappa i valori in [-1, 1]
 
         return x, attention_maps

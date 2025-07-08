@@ -18,7 +18,7 @@ class PokemonDataset(Dataset):
             image_dir: Directory contenente le immagini dei Pokemon
             tokenizer: Tokenizer per il preprocessing del testo (es. BERT)
             max_length: Lunghezza massima delle sequenze tokenizzate
-            image_size: Dimensione target delle immagini (default 215x215)
+            image_size: Dimensione target delle immagini (default 256x256)
         """
         download_dataset_if_not_exists()
 
@@ -32,11 +32,11 @@ class PokemonDataset(Dataset):
         self.max_length = max_length
 
         # Normalizza le immagini in [-1, 1] e le ridimensiona
-        # #804, #896, #897 e #898 hanno dimensioni diverse da 215x215
+        # Aggiornato da 215x215 a 256x256
         self.image_transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),  # Normalizza a [-1, 1]
-            transforms.Resize((215, 215))
+            transforms.Resize((256, 256))
         ])
 
     def __len__(self):
@@ -83,24 +83,18 @@ class PokemonDataset(Dataset):
         image_path = self.image_dir/image_filename
 
         # Carica l'immagine
-        try:
-            image = Image.open(image_path).convert('RGBA')
+        image = Image.open(image_path).convert('RGBA')
 
-            # Gestisce la trasparenza: converte RGBA in RGB con sfondo bianco
-            if image.mode == 'RGBA':
-                # Crea uno sfondo bianco
-                background = Image.new('RGB', image.size, (255, 255, 255))
-                # Componi l'immagine sullo sfondo bianco
-                background.paste(image, mask=image.split()[-1])  # Usa il canale alpha come maschera
-                image = background
+        # Gestisce la trasparenza: converte RGBA in RGB con sfondo bianco
+        if image.mode == 'RGBA':
+            # Crea uno sfondo bianco
+            background = Image.new('RGB', image.size, (255, 255, 255))
+            # Componi l'immagine sullo sfondo bianco
+            background.paste(image, mask=image.split()[-1])  # Usa il canale alpha come maschera
+            image = background
 
-            # Applica le trasformazioni
-            image_tensor = self.image_transform(image)
-
-        except Exception as e:
-            print(f"Errore nel caricamento dell'immagine {image_path}: {e}")
-            # Crea un tensor vuoto come fallback
-            image_tensor = torch.zeros(3, 215, 215)
+        # Applica le trasformazioni
+        image_tensor = self.image_transform(image)
 
         # Costruisce il risultato
         sample = {
