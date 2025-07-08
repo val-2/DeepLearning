@@ -137,10 +137,9 @@ class ImageDecoder(nn.Module):
         self.final_conv = nn.Conv2d(32, final_image_channels, kernel_size=3, stride=1, padding=1)
         self.final_activation = nn.Tanh()
 
-    def forward(self, noise, encoder_output):
+    def forward(self, noise, context_vector, encoder_output_full):
         # 1. Prepara il vettore di input iniziale
-        # Calcola un singolo vettore di contesto dal testo
-        context_vector = encoder_output.mean(dim=1)
+        # Usa il context_vector già calcolato con la media pesata
         initial_input = torch.cat([noise, context_vector], dim=1)
 
         # 2. Proietta e rimodella per iniziare la sequenza di convoluzioni
@@ -150,7 +149,8 @@ class ImageDecoder(nn.Module):
         # 3. Passa attraverso i blocchi del decoder
         attention_maps = []
         for block in self.blocks:
-            x, attn_weights = block(x, encoder_output if block.use_attention else None)
+            # L'attenzione per-step usa l'output completo dell'encoder
+            x, attn_weights = block(x, encoder_output_full if block.use_attention else None)
             if attn_weights is not None:
                 attention_maps.append(attn_weights)
 
@@ -172,8 +172,16 @@ class PikaPikaGen(nn.Module):
             fine_tune_embeddings=fine_tune_embeddings
         )
 
-        # L'output dell'encoder ha dimensione 256
         text_embed_dim = 256
+
+        # Nuovo meccanismo di attenzione per calcolare il contesto iniziale
+        # come media pesata (weighted average) degli output dell'encoder.
+        self.initial_context_attention = nn.Sequential(
+            nn.Linear(in_features=text_embed_dim, out_features=128),
+            nn.Tanh(),
+            nn.Linear(in_features=128, out_features=1),
+            nn.Softmax(dim=1)
+        )
 
         self.image_decoder = ImageDecoder(
             noise_dim=noise_dim,
@@ -187,11 +195,20 @@ class PikaPikaGen(nn.Module):
         batch_size = token_ids.size(0)
         noise = torch.randn(batch_size, self.noise_dim, device=token_ids.device)
 
-        # 1. Codifica il testo
+        # 1. Codifica il testo per ottenere i vettori di ogni parola
         encoder_output = self.text_encoder(token_ids)
 
-        # 2. Genera l'immagine
-        generated_image, attention_maps = self.image_decoder(noise, encoder_output)
+        # 2. Calcola il vettore di contesto iniziale con una media pesata (ATTENZIONE #1)
+        # 2.1 Calcola i pesi (scores) per ogni parola nella sequenza
+        attention_weights = self.initial_context_attention(encoder_output)
+
+        # 2.2 Calcola il contesto come somma pesata degli output dell'encoder
+        # Shapes: (B, SeqLen, 1) * (B, SeqLen, EmbDim) -> sum(dim=1) -> (B, EmbDim)
+        context_vector = torch.sum(attention_weights * encoder_output, dim=1)
+
+        # 3. Genera l'immagine usando il contesto iniziale e l'output completo dell'encoder
+        #    per l'attenzione interna del decoder (ATTENZIONE #2)
+        generated_image, attention_maps = self.image_decoder(noise, context_vector, encoder_output)
 
         if return_attentions:
             return generated_image, attention_maps
