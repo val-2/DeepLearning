@@ -119,13 +119,13 @@ class ImageDecoder(nn.Module):
         # e per mantenere più canali nelle prime fasi.
         self.blocks = nn.ModuleList([
             # 4x4 -> 8x8
-            DecoderBlock(in_channels=256, out_channels=256, use_attention=False),
+            DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
             # 8x8 -> 16x16
-            DecoderBlock(in_channels=256, out_channels=256, use_attention=False),
+            DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
             # 16x16 -> 32x32
-            DecoderBlock(in_channels=256, out_channels=256, use_attention=False),
+            DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
             # 32x32 -> 64x64
-            DecoderBlock(in_channels=256, out_channels=128, use_attention=False),
+            DecoderBlock(in_channels=256, out_channels=128, use_attention=True),
             # 64x64 -> 128x128
             DecoderBlock(in_channels=128, out_channels=64, use_attention=False),
             # 128x128 -> 256x256
@@ -139,7 +139,7 @@ class ImageDecoder(nn.Module):
 
     def forward(self, noise, encoder_output):
         # 1. Prepara il vettore di input iniziale
-        # Calcola un singolo vettore di contesto dal testo (UNICO PUNTO DI ATTENZIONE)
+        # Calcola un singolo vettore di contesto dal testo
         context_vector = encoder_output.mean(dim=1)
         initial_input = torch.cat([noise, context_vector], dim=1)
 
@@ -147,11 +147,12 @@ class ImageDecoder(nn.Module):
         x = self.initial_projection(initial_input)
         x = x.view(x.size(0), 256, 4, 4) # -> (B, 256, 4, 4)
 
-        # 3. Passa attraverso i blocchi del decoder (senza più attenzione)
+        # 3. Passa attraverso i blocchi del decoder
         attention_maps = []
         for block in self.blocks:
-            # Nessun blocco usa più l'attenzione
-            x, attn_weights = block(x, None)
+            x, attn_weights = block(x, encoder_output if block.use_attention else None)
+            if attn_weights is not None:
+                attention_maps.append(attn_weights)
 
         # 4. Layer finale
         x = self.final_conv(x) # -> (B, 3, 256, 256)
