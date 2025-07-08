@@ -7,6 +7,7 @@ from transformers import AutoTokenizer
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
+import glob
 # Aggiungo questo per evitare problemi con la GUI di matplotlib su server senza display
 import matplotlib
 matplotlib.use('Agg')
@@ -34,6 +35,18 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 OUTPUT_DIR = "training_output"
 CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
 IMAGE_DIR = os.path.join(OUTPUT_DIR, "images")
+
+
+def find_latest_checkpoint(checkpoint_dir):
+    """Trova l'ultimo checkpoint in una directory basandosi sul numero di epoca nel nome del file."""
+    list_of_files = glob.glob(os.path.join(checkpoint_dir, 'checkpoint_epoch_*.pth.tar'))
+    if not list_of_files:
+        return None
+    try:
+        latest_file = max(list_of_files, key=lambda f: int(os.path.basename(f).split('_')[-1].split('.')[0]))
+        return latest_file
+    except (ValueError, IndexError):
+        return None
 
 
 def save_checkpoint(epoch, model, optimizer, loss, is_best=False):
@@ -222,7 +235,7 @@ def save_comparison_grid(epoch, model, batch, set_name, device):
     plt.close(fig)
 
 
-def train():
+def train(epochs_to_run=100, resume_from_checkpoint=False):
     """
     Funzione principale per l'addestramento e la validazione del modello PikaPikaGen.
 
@@ -240,18 +253,30 @@ def train():
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     full_dataset = PokemonDataset(tokenizer=tokenizer)
 
+    # Divisione deterministica del dataset
     train_size = int(TRAIN_VAL_SPLIT * len(full_dataset))
     val_size = len(full_dataset) - train_size
-    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size],
+                                              generator=torch.Generator().manual_seed(42))
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True)
 
-    # Prendi batch fissi per visualizzazioni consistenti
-    fixed_train_batch = next(iter(DataLoader(train_dataset, batch_size=NUM_VIZ_SAMPLES, shuffle=False)))
-    fixed_val_batch = next(iter(DataLoader(val_dataset, batch_size=NUM_VIZ_SAMPLES, shuffle=False)))
-    fixed_train_attention_batch = next(iter(DataLoader(train_dataset, batch_size=1, shuffle=False)))
-    fixed_val_attention_batch = next(iter(DataLoader(val_dataset, batch_size=1, shuffle=False)))
+    # Scelta deterministica dei batch per la visualizzazione
+    # Creiamo un dataloader non mescolato per la riproducibilità
+    viz_loader_train = DataLoader(train_dataset, batch_size=NUM_VIZ_SAMPLES, shuffle=False)
+    fixed_train_batch = next(iter(viz_loader_train))
+
+    viz_loader_val = DataLoader(val_dataset, batch_size=NUM_VIZ_SAMPLES, shuffle=False)
+    fixed_val_batch = next(iter(viz_loader_val))
+
+    # Per l'attenzione usiamo un solo campione
+    viz_loader_train_attn = DataLoader(train_dataset, batch_size=1, shuffle=False)
+    fixed_train_attention_batch = next(iter(viz_loader_train_attn))
+
+    viz_loader_val_attn = DataLoader(val_dataset, batch_size=1, shuffle=False)
+    fixed_val_attention_batch = next(iter(viz_loader_val_attn))
+
 
     print(f"Dataset: {len(train_dataset)} train, {len(val_dataset)} val")
 
@@ -259,18 +284,34 @@ def train():
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, betas=(0.5, 0.999))
     criterion = nn.L1Loss()
 
+    start_epoch = 1
     best_val_loss = float('inf')
 
-    print("--- Inizio Training ---")
-    for epoch in range(1, NUM_EPOCHS + 1):
+    if resume_from_checkpoint:
+        latest_checkpoint_path = find_latest_checkpoint(CHECKPOINT_DIR)
+        if latest_checkpoint_path:
+            print(f"--- Ripresa del training dal checkpoint: {latest_checkpoint_path} ---")
+            checkpoint = torch.load(latest_checkpoint_path, map_location=DEVICE)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch'] + 1
+            best_val_loss = checkpoint.get('loss', float('inf'))
+            print(f"Checkpoint caricato. Si riparte dall'epoca {start_epoch}.")
+        else:
+            print("Nessun checkpoint trovato. Si avvia un nuovo training.")
+
+    final_epoch = start_epoch + epochs_to_run - 1
+    print(f"--- Inizio Training (Epoche da {start_epoch} a {final_epoch}) ---")
+
+    for epoch in range(start_epoch, final_epoch + 1):
         model.train()
         train_loss = 0.0
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{NUM_EPOCHS} [Training]")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{final_epoch} [Training]")
         for batch in pbar:
             token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
 
             optimizer.zero_grad()
-            generated_images = model(token_ids)
+            generated_images, _ = model(token_ids)
             loss = criterion(generated_images, real_images)
             loss.backward()
             optimizer.step()
@@ -285,12 +326,12 @@ def train():
         with torch.no_grad():
             for batch in val_loader:
                 token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
-                generated_images = model(token_ids)
+                generated_images, _ = model(token_ids)
                 loss = criterion(generated_images, real_images)
                 val_loss += loss.item()
 
         avg_val_loss = val_loss / len(val_loader)
-        print(f"Epoch {epoch}/{NUM_EPOCHS} -> Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        print(f"Epoch {epoch}/{final_epoch} -> Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
 
         # --- Salvataggio Checkpoint ---
         is_best = avg_val_loss < best_val_loss
@@ -309,4 +350,9 @@ def train():
 
 
 if __name__ == "__main__":
-    train()
+    # --- IMPOSTA QUI LA MODALITÀ DI TRAINING ---
+    # Imposta `CONTINUE_TRAINING` a True per riprendere dall'ultimo checkpoint.
+    CONTINUE_TRAINING = False
+    EPOCHS = 100
+
+    train(epochs_to_run=EPOCHS, resume_from_checkpoint=CONTINUE_TRAINING)
