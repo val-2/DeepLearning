@@ -258,7 +258,7 @@ def save_comparison_grid(epoch, model, batch, set_name, device):
     plt.close(fig)
 
 
-def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_EPOCHS):
+def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_EPOCHS, use_multi_gpu: bool = True):
     """
     Funzione principale per l'addestramento e la validazione del modello PikaPikaGen.
 
@@ -266,6 +266,7 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
         continue_from_last_checkpoint (bool): Se True, cerca di riprendere dall'ultimo
                                               checkpoint. Se non lo trova, inizia da zero.
         epochs_to_run (int): Il numero di epoche per cui eseguire l'addestramento.
+        use_multi_gpu (bool): Se True, abilita l'uso di DataParallel se sono disponibili più GPU.
     """
     print("--- Impostazioni di Training ---")
     print(f"Utilizzo del dispositivo: {DEVICE}")
@@ -303,9 +304,11 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
     model_G = PikaPikaGen(text_encoder_model_name=MODEL_NAME, noise_dim=NOISE_DIM).to(DEVICE)
 
     # --- Supporto Multi-GPU ---
-    if torch.cuda.device_count() > 1:
+    if use_multi_gpu and torch.cuda.device_count() > 1:
         print(f"Utilizzo di {torch.cuda.device_count()} GPU con nn.DataParallel.")
         model_G = nn.DataParallel(model_G)
+    elif use_multi_gpu and torch.cuda.device_count() <= 1:
+        print("Multi-GPU richiesto ma solo una o nessuna GPU disponibile. Proseguo con una singola GPU/CPU.")
 
     optimizer_G = optim.Adam(model_G.parameters(), lr=LEARNING_RATE, betas=(0.5, 0.999))
 
@@ -433,7 +436,9 @@ if __name__ == "__main__":
     # continue_training=True -> Cerca l'ultimo checkpoint e riprende. Se non lo trova, parte da zero.
     # continue_training=False -> Parte sempre da zero.
     # epochs -> Numero di epoche per cui addestrare in questa sessione.
+    # use_multi_gpu -> Se True, utilizza DataParallel se sono disponibili più GPU.
     train(
         continue_from_last_checkpoint=True,
-        epochs_to_run=100
+        epochs_to_run=100,
+        use_multi_gpu=True
     )
