@@ -32,7 +32,7 @@ RANDOM_SEED = 42
 # Peso per la loss L1
 LAMBDA_L1 = 1.0
 # Peso per la loss avversaria
-LAMBDA_ADV = 1.0
+LAMBDA_ADV = 0.1
 # NCE_T = 0.07
 # NCE_FEAT_DIM = 256
 # NCE_NUM_PATCHES = 256
