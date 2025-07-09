@@ -26,6 +26,8 @@ TRAIN_VAL_SPLIT = 0.9
 NUM_WORKERS = 0
 # Numero di campioni da visualizzare nelle griglie di confronto
 NUM_VIZ_SAMPLES = 4
+# Seed per la riproducibilità
+RANDOM_SEED = 42
 
 
 # --- Setup del Dispositivo ---
@@ -46,8 +48,8 @@ def find_latest_checkpoint(checkpoint_dir):
         latest_file = max(list_of_files, key=lambda f: int(os.path.basename(f).split('_')[-1].split('.')[0]))
         return latest_file
     except (ValueError, IndexError):
+        print("Attenzione: impossibile determinare l'ultimo checkpoint a causa di nomi file non standard.")
         return None
-
 
 def save_checkpoint(epoch, model, optimizer, loss, is_best=False):
     """
@@ -74,22 +76,16 @@ def save_checkpoint(epoch, model, optimizer, loss, is_best=False):
 
 def denormalize_image(tensor):
     """
-    Denormalizza un tensore di immagine normalizzato nell'intervallo [-1, 1]
-    riportandolo nell'intervallo [0, 1].
+    Denormalizza un tensore immagine dall'intervallo [-1, 1] a [0, 1] per la visualizzazione.
+
+    Args:
+        tensor (torch.Tensor): Il tensore dell'immagine, con valori in [-1, 1].
+
+    Returns:
+        torch.Tensor: Il tensore denormalizzato con valori in [0, 1].
     """
-    # Controlla se il tensore è 3D (C, H, W) e aggiunge una dimensione batch temporanea
-    is_3d = tensor.dim() == 3
-    if is_3d:
-        tensor = tensor.unsqueeze(0)
-
-    # Denormalizzazione
-    denormalized = (tensor * 0.5) + 0.5
-
-    # Rimuove la dimensione batch se è stata aggiunta
-    if is_3d:
-        denormalized = denormalized.squeeze(0)
-
-    return denormalized
+    tensor = (tensor + 1) / 2
+    return tensor.clamp(0, 1)
 
 def save_attention_visualization(epoch, model, tokenizer, batch, device, set_name):
     """
@@ -111,6 +107,10 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device, set_nam
 
     with torch.no_grad():
         token_ids = batch['text'].to(device)
+        # Se il batch ha più elementi, prendi solo il primo per la visualizzazione
+        if token_ids.dim() > 2:
+             token_ids = token_ids[0].unsqueeze(0)
+
         pokemon_id = batch['idx'][0]
         description = batch['description'][0]
         tokens = tokenizer.convert_ids_to_tokens(token_ids.squeeze(0))
@@ -241,94 +241,73 @@ def save_comparison_grid(epoch, model, batch, set_name, device):
     plt.close(fig)
 
 
-def train(epochs_to_run=200, resume_from_checkpoint=None):
+def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_EPOCHS):
     """
-    Funzione principale per il training del modello PikaPikaGen.
+    Funzione principale per l'addestramento e la validazione del modello PikaPikaGen.
 
     Args:
-        epochs_to_run (int): Il numero totale di epoche per cui addestrare il modello.
-        resume_from_checkpoint (bool, optional): Controlla la ripresa del training.
-            - True: Tenta di riprendere dall'ultimo checkpoint. Solleva un errore se non ne trova.
-            - False: Inizia un nuovo training, ignorando i checkpoint esistenti.
-            - None (default): Riprende automaticamente se un checkpoint viene trovato, altrimenti inizia un nuovo training.
+        continue_from_last_checkpoint (bool): Se True, cerca di riprendere dall'ultimo
+                                              checkpoint. Se non lo trova, inizia da zero.
+        epochs_to_run (int): Il numero di epoche per cui eseguire l'addestramento.
     """
-    # Assicura che la directory per i checkpoint esista
+    print("--- Impostazioni di Training ---")
+    print(f"Utilizzo del dispositivo: {DEVICE}")
+
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    os.makedirs(IMAGE_DIR, exist_ok=True)
 
-    # Setup del dataset e dei dataloader
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    full_dataset = PokemonDataset(tokenizer=tokenizer)
 
-    # Divisione deterministica del dataset
+    # --- Divisione deterministica del Dataset ---
+    full_dataset = PokemonDataset(tokenizer=tokenizer)
     train_size = int(TRAIN_VAL_SPLIT * len(full_dataset))
     val_size = len(full_dataset) - train_size
-    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size],
-                                              generator=torch.Generator().manual_seed(42))
+    train_dataset, val_dataset = random_split(
+        full_dataset,
+        [train_size, val_size],
+        generator=torch.Generator().manual_seed(RANDOM_SEED)
+    )
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True)
 
-    # Scelta deterministica dei batch per la visualizzazione
-    # Creiamo un dataloader non mescolato per la riproducibilità
-    viz_loader_train = DataLoader(train_dataset, batch_size=NUM_VIZ_SAMPLES, shuffle=False)
-    fixed_train_batch = next(iter(viz_loader_train))
+    # --- Creazione deterministica dei batch per la visualizzazione ---
+    # Usiamo un generatore separato per il dataloader per non interferire con lo shuffle del training
+    vis_generator = torch.Generator().manual_seed(RANDOM_SEED)
+    fixed_train_batch = next(iter(DataLoader(train_dataset, batch_size=NUM_VIZ_SAMPLES, shuffle=True, generator=vis_generator)))
+    fixed_val_batch = next(iter(DataLoader(val_dataset, batch_size=NUM_VIZ_SAMPLES, shuffle=False))) # la validazione non ha shuffle
 
-    viz_loader_val = DataLoader(val_dataset, batch_size=NUM_VIZ_SAMPLES, shuffle=False)
-    fixed_val_batch = next(iter(viz_loader_val))
-
-    # Per l'attenzione usiamo un solo campione
-    viz_loader_train_attn = DataLoader(train_dataset, batch_size=1, shuffle=False)
-    fixed_train_attention_batch = next(iter(viz_loader_train_attn))
-
-    viz_loader_val_attn = DataLoader(val_dataset, batch_size=1, shuffle=False)
-    fixed_val_attention_batch = next(iter(viz_loader_val_attn))
-
+    vis_generator.manual_seed(RANDOM_SEED) # Reset per coerenza
+    fixed_train_attention_batch = next(iter(DataLoader(train_dataset, batch_size=1, shuffle=True, generator=vis_generator)))
+    fixed_val_attention_batch = next(iter(DataLoader(val_dataset, batch_size=1, shuffle=False)))
 
     print(f"Dataset: {len(train_dataset)} train, {len(val_dataset)} val")
 
-    # Inizializza il modello e l'ottimizzatore
-    model = PikaPikaGen(noise_dim=NOISE_DIM).to(DEVICE)
-    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
+    model = PikaPikaGen(text_encoder_model_name=MODEL_NAME, noise_dim=NOISE_DIM).to(DEVICE)
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, betas=(0.5, 0.999))
+    criterion = nn.L1Loss()
 
     start_epoch = 1
     best_val_loss = float('inf')
 
-    # Logica per riprendere il training da un checkpoint
-    checkpoints = glob.glob(os.path.join(CHECKPOINT_DIR, "pikapikagen_epoch_*.pth"))
-    latest_checkpoint_path = max(checkpoints, key=os.path.getctime) if checkpoints else None
-
-    should_load_checkpoint = False
-    if resume_from_checkpoint is True:
-        if not latest_checkpoint_path:
-            raise FileNotFoundError("`resume_from_checkpoint` è True, ma nessun checkpoint è stato trovato.")
-        should_load_checkpoint = True
-    elif resume_from_checkpoint is None:
+    # --- Logica per continuare il training ---
+    if continue_from_last_checkpoint:
+        latest_checkpoint_path = find_latest_checkpoint(CHECKPOINT_DIR)
         if latest_checkpoint_path:
-            print("Trovato un checkpoint esistente. Riprendo automaticamente il training.")
-            should_load_checkpoint = True
+            print(f"--- Ripresa del training dal checkpoint: {os.path.basename(latest_checkpoint_path)} ---")
+            checkpoint = torch.load(latest_checkpoint_path, map_location=DEVICE)
+
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch'] + 1
+            best_val_loss = checkpoint.get('loss', float('inf'))
+
+            print(f"Checkpoint caricato. Si riparte dall'epoca {start_epoch}.")
         else:
-            print("Nessun checkpoint trovato. Inizio un nuovo training.")
-    # Se resume_from_checkpoint è False, `should_load_checkpoint` rimane False e si inizia da capo.
-
-    if should_load_checkpoint and latest_checkpoint_path:
-        print(f"Caricamento del checkpoint: {latest_checkpoint_path}")
-        checkpoint = torch.load(latest_checkpoint_path, map_location=DEVICE)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint.get('epoch', 0) + 1
-        best_val_loss = checkpoint.get('best_val_loss', float('inf'))
-        print(f"Ripresa del training dall'epoca {start_epoch} con best_val_loss: {best_val_loss:.4f}")
-
-    criterion = nn.L1Loss()
-
-    # Seeding per la riproducibilità delle visualizzazioni
-    torch.manual_seed(42)
-    torch.cuda.manual_seed(42)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+            print("--- Nessun checkpoint trovato. Inizio un nuovo training da zero. ---")
 
     final_epoch = start_epoch + epochs_to_run - 1
-    print(f"--- Inizio Training (Epoche da {start_epoch} a {final_epoch}) ---")
+    print(f"--- Inizio Training (da epoca {start_epoch} a {final_epoch}) ---")
 
     for epoch in range(start_epoch, final_epoch + 1):
         model.train()
@@ -338,7 +317,7 @@ def train(epochs_to_run=200, resume_from_checkpoint=None):
             token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
 
             optimizer.zero_grad()
-            generated_images, _ = model(token_ids, return_attentions=False)
+            generated_images, _ = model(token_ids) # Ignoriamo le attention maps qui
             loss = criterion(generated_images, real_images)
             loss.backward()
             optimizer.step()
@@ -353,7 +332,7 @@ def train(epochs_to_run=200, resume_from_checkpoint=None):
         with torch.no_grad():
             for batch in val_loader:
                 token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
-                generated_images, _ = model(token_ids, return_attentions=False)
+                generated_images, _ = model(token_ids)
                 loss = criterion(generated_images, real_images)
                 val_loss += loss.item()
 
@@ -378,8 +357,10 @@ def train(epochs_to_run=200, resume_from_checkpoint=None):
 
 if __name__ == "__main__":
     # --- IMPOSTA QUI LA MODALITÀ DI TRAINING ---
-    # Imposta `CONTINUE_TRAINING` a True per riprendere dall'ultimo checkpoint.
-    CONTINUE_TRAINING = False
-    EPOCHS = 100
-
-    train(epochs_to_run=EPOCHS, resume_from_checkpoint=CONTINUE_TRAINING)
+    # continue_training=True -> Cerca l'ultimo checkpoint e riprende. Se non lo trova, parte da zero.
+    # continue_training=False -> Parte sempre da zero.
+    # epochs -> Numero di epoche per cui addestrare in questa sessione.
+    train(
+        continue_from_last_checkpoint=True,
+        epochs_to_run=100
+    )
