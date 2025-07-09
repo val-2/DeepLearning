@@ -15,7 +15,7 @@ from torchvision import transforms
 
 from pokemon_dataset import PokemonDataset
 from model import PikaPikaGen
-from losses import PatchGANDiscriminator
+from losses import VGGPerceptualLoss, SSIMLoss
 
 # --- Parametri di Training Fissi ---
 MODEL_NAME = "prajjwal1/bert-mini"
@@ -29,13 +29,10 @@ NUM_WORKERS = 0
 NUM_VIZ_SAMPLES = 4
 # Seed per la riproducibilità
 RANDOM_SEED = 42
-# Peso per la loss L1
+# Pesi per le diverse loss
 LAMBDA_L1 = 1.0
-# Peso per la loss avversaria
-LAMBDA_ADV = 0.05
-# NCE_T = 0.07
-# NCE_FEAT_DIM = 256
-# NCE_NUM_PATCHES = 256
+LAMBDA_PERCEPTUAL = 0.05
+LAMBDA_SSIM = 0.0
 
 
 # --- Setup del Dispositivo ---
@@ -67,7 +64,7 @@ def find_latest_checkpoint(checkpoint_dir):
         print("Attenzione: impossibile determinare l'ultimo checkpoint a causa di nomi file non standard.")
         return None
 
-def save_checkpoint(epoch, model_G, optimizer_G, model_D, optimizer_D, loss, is_best=False):
+def save_checkpoint(epoch, model_G, optimizer_G, loss, is_best=False):
     """
     Salva un checkpoint del modello, dell'ottimizzatore e della loss.
 
@@ -75,8 +72,6 @@ def save_checkpoint(epoch, model_G, optimizer_G, model_D, optimizer_D, loss, is_
         epoch (int): L'epoca corrente.
         model_G (nn.Module): Il modello generatore da salvare.
         optimizer_G (torch.optim.Optimizer): L'ottimizzatore del generatore da salvare.
-        model_D (nn.Module): Il modello discriminatore da salvare.
-        optimizer_D (torch.optim.Optimizer): L'ottimizzatore del discriminatore da salvare.
         loss (float): La loss di validazione corrente.
         is_best (bool, optional): Se True, salva il modello anche come "best_model.pth.tar".
     """
@@ -84,8 +79,6 @@ def save_checkpoint(epoch, model_G, optimizer_G, model_D, optimizer_D, loss, is_
         'epoch': epoch,
         'model_G_state_dict': model_G.module.state_dict() if isinstance(model_G, nn.DataParallel) else model_G.state_dict(),
         'optimizer_G_state_dict': optimizer_G.state_dict(),
-        'model_D_state_dict': model_D.module.state_dict() if isinstance(model_D, nn.DataParallel) else model_D.state_dict(),
-        'optimizer_D_state_dict': optimizer_D.state_dict(),
         'loss': loss,
     }
     filename = os.path.join(CHECKPOINT_DIR, f"checkpoint_epoch_{epoch:03d}.pth.tar")
@@ -308,19 +301,17 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
     print(f"Dataset: {len(train_dataset)} train, {len(val_dataset)} val")
 
     model_G = PikaPikaGen(text_encoder_model_name=MODEL_NAME, noise_dim=NOISE_DIM).to(DEVICE)
-    model_D = PatchGANDiscriminator(in_channels=3).to(DEVICE)
 
     # --- Supporto Multi-GPU ---
     if torch.cuda.device_count() > 1:
         print(f"Utilizzo di {torch.cuda.device_count()} GPU con nn.DataParallel.")
         model_G = nn.DataParallel(model_G)
-        model_D = nn.DataParallel(model_D)
 
     optimizer_G = optim.Adam(model_G.parameters(), lr=LEARNING_RATE, betas=(0.5, 0.999))
-    optimizer_D = optim.Adam(model_D.parameters(), lr=LEARNING_RATE, betas=(0.5, 0.999))
 
     criterion_l1 = nn.L1Loss().to(DEVICE)
-    criterion_adv = nn.MSELoss().to(DEVICE)
+    criterion_perceptual = VGGPerceptualLoss(device=DEVICE).to(DEVICE)
+    criterion_ssim = SSIMLoss().to(DEVICE)
 
     start_epoch = 1
     best_val_loss = float('inf')
@@ -341,10 +332,6 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
                  optimizer_G.load_state_dict(checkpoint['optimizer_state_dict'])
 
 
-            if 'model_D_state_dict' in checkpoint:
-                model_D.load_state_dict(checkpoint['model_D_state_dict'])
-                optimizer_D.load_state_dict(checkpoint['optimizer_D_state_dict'])
-
             start_epoch = checkpoint['epoch'] + 1
             best_val_loss = checkpoint.get('loss', float('inf'))
             if best_val_loss is None:
@@ -359,92 +346,77 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
 
     for epoch in range(start_epoch, final_epoch + 1):
         model_G.train()
-        model_D.train()
 
-        train_loss_g, train_loss_d, train_loss_l1, train_loss_g_adv = 0.0, 0.0, 0.0, 0.0
+        train_loss_g, train_loss_l1, train_loss_perceptual, train_loss_ssim = 0.0, 0.0, 0.0, 0.0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{final_epoch} [Training]")
         for batch in pbar:
             token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
-            real_label = 1.0
-            fake_label = 0.0
-
-            # ---------------------
-            #  Training del Discriminatore
-            # ---------------------
-            optimizer_D.zero_grad()
-
-            # Loss con immagini reali
-            pred_real = model_D(real_images)
-            loss_d_real = criterion_adv(pred_real, torch.full_like(pred_real, real_label, device=DEVICE))
-
-            # Loss con immagini generate
-            generated_images = model_G(token_ids)
-            pred_fake = model_D(generated_images.detach())
-            loss_d_fake = criterion_adv(pred_fake, torch.full_like(pred_fake, fake_label, device=DEVICE))
-
-            # Loss totale del discriminatore
-            loss_D = 0.5 * (loss_d_real + loss_d_fake)
-            loss_D.backward()
-            optimizer_D.step()
-
 
             # ---------------------
             #  Training del Generatore
             # ---------------------
             optimizer_G.zero_grad()
 
-            # Loss avversaria del generatore
-            pred_fake_for_g = model_D(generated_images)
-            loss_g_adv = criterion_adv(pred_fake_for_g, torch.full_like(pred_fake_for_g, real_label, device=DEVICE))
+            generated_images = model_G(token_ids)
 
             # Loss L1 (ricostruzione)
             loss_l1 = criterion_l1(generated_images, real_images)
+            # Loss Percettiva
+            loss_perceptual = criterion_perceptual(generated_images, real_images)
+            # Loss SSIM
+            loss_ssim = criterion_ssim(generated_images, real_images)
+
 
             # Loss totale del generatore
-            loss_G = LAMBDA_L1 * loss_l1 + LAMBDA_ADV * loss_g_adv
+            loss_G = LAMBDA_L1 * loss_l1 + LAMBDA_PERCEPTUAL * loss_perceptual + LAMBDA_SSIM * loss_ssim
             loss_G.backward()
             optimizer_G.step()
 
             # Aggiorna le loss per il logging
             train_loss_g += loss_G.item()
-            train_loss_d += loss_D.item()
             train_loss_l1 += loss_l1.item()
-            train_loss_g_adv += loss_g_adv.item()
+            train_loss_perceptual += loss_perceptual.item()
+            train_loss_ssim += loss_ssim.item()
+
             pbar.set_postfix({
                 'G_loss': f"{loss_G.item():.4f}",
-                'D_loss': f"{loss_D.item():.4f}",
                 'L1': f"{loss_l1.item():.4f}",
-                'G_adv': f"{loss_g_adv.item():.4f}"
+                'Perceptual': f"{loss_perceptual.item():.4f}",
+                'SSIM': f"{loss_ssim.item():.4f}"
             })
 
         avg_train_loss_g = train_loss_g / len(train_loader)
-        avg_train_loss_d = train_loss_d / len(train_loader)
         avg_train_loss_l1 = train_loss_l1 / len(train_loader)
-        avg_train_loss_g_adv = train_loss_g_adv / len(train_loader)
+        avg_train_loss_perceptual = train_loss_perceptual / len(train_loader)
+        avg_train_loss_ssim = train_loss_ssim / len(train_loader)
 
 
         model_G.eval()
-        val_loss = 0.0
+        val_loss_l1, val_loss_perceptual, val_loss_ssim = 0.0, 0.0, 0.0
         with torch.no_grad():
             for batch in val_loader:
                 token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
                 generated_images = model_G(token_ids)
-                loss = criterion_l1(generated_images, real_images)
-                val_loss += loss.item()
+                val_loss_l1 += criterion_l1(generated_images, real_images).item()
+                val_loss_perceptual += criterion_perceptual(generated_images, real_images).item()
+                val_loss_ssim += criterion_ssim(generated_images, real_images).item()
 
-        avg_val_loss = val_loss / len(val_loader)
+        avg_val_loss_l1 = val_loss_l1 / len(val_loader)
+        avg_val_loss_perceptual = val_loss_perceptual / len(val_loader)
+        avg_val_loss_ssim = val_loss_ssim / len(val_loader)
+        avg_val_loss = avg_val_loss_l1 # Usiamo L1 per il checkpointing
+
         print(
             f"Epoch {epoch}/{final_epoch} -> "
-            f"Train G_Loss: {avg_train_loss_g:.4f} (L1: {avg_train_loss_l1:.4f}, Adv: {avg_train_loss_g_adv:.4f}), "
-            f"Train D_Loss: {avg_train_loss_d:.4f}, "
-            f"Val L1 Loss: {avg_val_loss:.4f}"
+            f"Train G_Loss: {avg_train_loss_g:.4f} (L1: {avg_train_loss_l1:.4f}, Perceptual: {avg_train_loss_perceptual:.4f}, SSIM: {avg_train_loss_ssim:.4f}), "
+            f"Val Loss (L1: {avg_val_loss_l1:.4f}, Perceptual: {avg_val_loss_perceptual:.4f}, SSIM: {avg_val_loss_ssim:.4f})"
         )
 
         # --- Salvataggio Checkpoint ---
         is_best = avg_val_loss < best_val_loss
         if is_best:
             best_val_loss = avg_val_loss
-        save_checkpoint(epoch, model_G, optimizer_G, model_D, optimizer_D, avg_val_loss, is_best)
+        save_checkpoint(epoch, model_G, optimizer_G, avg_val_loss, is_best)
 
         # --- Generazione Visualizzazioni ---
         print(f"Epoch {epoch}: Generazione visualizzazioni...")
