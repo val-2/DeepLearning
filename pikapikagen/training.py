@@ -15,7 +15,7 @@ from torchvision import transforms
 
 from pokemon_dataset import PokemonDataset
 from model import PikaPikaGen
-from losses import VGGPerceptualLoss, SSIMLoss
+from losses import VGGPerceptualLoss, SSIMLoss, SobelLoss
 
 # --- Parametri di Training Fissi ---
 MODEL_NAME = "prajjwal1/bert-mini"
@@ -33,6 +33,7 @@ RANDOM_SEED = 42
 LAMBDA_L1 = 1.0
 LAMBDA_PERCEPTUAL = 0.01
 LAMBDA_SSIM = 0.0
+LAMBDA_SOBEL = 0.2
 
 
 # --- Setup del Dispositivo ---
@@ -323,6 +324,7 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
     criterion_l1 = nn.L1Loss().to(DEVICE)
     criterion_perceptual = VGGPerceptualLoss(device=DEVICE).to(DEVICE)
     criterion_ssim = SSIMLoss().to(DEVICE)
+    criterion_sobel = SobelLoss().to(DEVICE)
 
     start_epoch = 1
     best_val_loss = float('inf')
@@ -370,7 +372,7 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
     for epoch in range(start_epoch, final_epoch + 1):
         model_G.train()
 
-        train_loss_g, train_loss_l1, train_loss_perceptual, train_loss_ssim = 0.0, 0.0, 0.0, 0.0
+        train_loss_g, train_loss_l1, train_loss_perceptual, train_loss_ssim, train_loss_sobel = 0.0, 0.0, 0.0, 0.0, 0.0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{final_epoch} [Training]")
         for batch in pbar:
             token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
@@ -388,10 +390,12 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
             loss_perceptual = criterion_perceptual(generated_images, real_images)
             # Loss SSIM
             loss_ssim = criterion_ssim(generated_images, real_images)
+            # Loss Sobel
+            loss_sobel = criterion_sobel(generated_images, real_images)
 
 
             # Loss totale del generatore
-            loss_G = LAMBDA_L1 * loss_l1 + LAMBDA_PERCEPTUAL * loss_perceptual + LAMBDA_SSIM * loss_ssim
+            loss_G = LAMBDA_L1 * loss_l1 + LAMBDA_PERCEPTUAL * loss_perceptual + LAMBDA_SSIM * loss_ssim + LAMBDA_SOBEL * loss_sobel
             loss_G.backward()
             optimizer_G.step()
 
@@ -400,22 +404,25 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
             train_loss_l1 += loss_l1.item()
             train_loss_perceptual += loss_perceptual.item()
             train_loss_ssim += loss_ssim.item()
+            train_loss_sobel += loss_sobel.item()
 
             pbar.set_postfix({
                 'G_loss': f"{loss_G.item():.4f}",
                 'L1': f"{loss_l1.item():.4f}",
                 'Perceptual': f"{loss_perceptual.item():.4f}",
-                'SSIM': f"{loss_ssim.item():.4f}"
+                'SSIM': f"{loss_ssim.item():.4f}",
+                'Sobel': f"{loss_sobel.item():.4f}"
             })
 
         avg_train_loss_g = train_loss_g / len(train_loader)
         avg_train_loss_l1 = train_loss_l1 / len(train_loader)
         avg_train_loss_perceptual = train_loss_perceptual / len(train_loader)
         avg_train_loss_ssim = train_loss_ssim / len(train_loader)
+        avg_train_loss_sobel = train_loss_sobel / len(train_loader)
 
 
         model_G.eval()
-        val_loss_l1, val_loss_perceptual, val_loss_ssim = 0.0, 0.0, 0.0
+        val_loss_l1, val_loss_perceptual, val_loss_ssim, val_loss_sobel = 0.0, 0.0, 0.0, 0.0
         with torch.no_grad():
             for batch in val_loader:
                 token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
@@ -423,16 +430,18 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
                 val_loss_l1 += criterion_l1(generated_images, real_images).item()
                 val_loss_perceptual += criterion_perceptual(generated_images, real_images).item()
                 val_loss_ssim += criterion_ssim(generated_images, real_images).item()
+                val_loss_sobel += criterion_sobel(generated_images, real_images).item()
 
         avg_val_loss_l1 = val_loss_l1 / len(val_loader)
         avg_val_loss_perceptual = val_loss_perceptual / len(val_loader)
         avg_val_loss_ssim = val_loss_ssim / len(val_loader)
+        avg_val_loss_sobel = val_loss_sobel / len(val_loader)
         avg_val_loss = avg_val_loss_l1 # Usiamo L1 per il checkpointing
 
         print(
             f"Epoch {epoch}/{final_epoch} -> "
-            f"Train G_Loss: {avg_train_loss_g:.4f} (L1: {avg_train_loss_l1:.4f}, Perceptual: {avg_train_loss_perceptual:.4f}, SSIM: {avg_train_loss_ssim:.4f}), "
-            f"Val Loss (L1: {avg_val_loss_l1:.4f}, Perceptual: {avg_val_loss_perceptual:.4f}, SSIM: {avg_val_loss_ssim:.4f})"
+            f"Train G_Loss: {avg_train_loss_g:.4f} (L1: {avg_train_loss_l1:.4f}, Perceptual: {avg_train_loss_perceptual:.4f}, SSIM: {avg_train_loss_ssim:.4f}, Sobel: {avg_train_loss_sobel:.4f}), "
+            f"Val Loss (L1: {avg_val_loss_l1:.4f}, Perceptual: {avg_val_loss_perceptual:.4f}, SSIM: {avg_val_loss_ssim:.4f}, Sobel: {avg_val_loss_sobel:.4f})"
         )
 
         # --- Salvataggio Checkpoint ---

@@ -261,3 +261,61 @@ class PatchNCELoss(nn.Module):
                 MLPs[layer_name]
             )
         return total_loss / len(feats_q)
+
+
+# ----------------------------------------------------------
+# Sobel Loss for Edge Preservation
+# ----------------------------------------------------------
+
+class SobelLoss(nn.Module):
+    """
+    Computes the Sobel loss between two images, which encourages edge similarity.
+    This loss operates on the grayscale versions of the input images.
+    """
+    def __init__(self):
+        super(SobelLoss, self).__init__()
+        # Sobel kernels for edge detection
+        kernel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32).view(1, 1, 3, 3)
+        kernel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32).view(1, 1, 3, 3)
+        self.register_buffer("kernel_x", kernel_x)
+        self.register_buffer("kernel_y", kernel_y)
+        self.l1 = nn.L1Loss()
+
+        # Grayscale conversion weights (ITU-R BT.601)
+        self.register_buffer("rgb_to_gray_weights", torch.tensor([0.299, 0.587, 0.114]).view(1, 3, 1, 1))
+
+    def _get_edges(self, img):
+        """
+        Converts an RGB image to grayscale and applies Sobel filters.
+        Args:
+            img: [B, 3, H, W] image tensor in range [-1, 1].
+        Returns:
+            Gradient magnitude map [B, 1, H, W].
+        """
+        # Ensure input is 4D
+        if img.dim() != 4:
+            raise ValueError(f"Expected 4D input (got {img.dim()}D)")
+
+        # Convert from [-1, 1] to [0, 1]
+        img = (img + 1.0) / 2.0
+
+        # Convert to grayscale
+        # The weights need to be on the same device as the image.
+        grayscale_img = F.conv2d(img, self.rgb_to_gray_weights.to(img.device))
+
+        # Apply Sobel filters. Kernels also need to be on the correct device.
+        grad_x = F.conv2d(grayscale_img, self.kernel_x.to(img.device), padding=1)
+        grad_y = F.conv2d(grayscale_img, self.kernel_y.to(img.device), padding=1)
+
+        # Compute gradient magnitude
+        edges = torch.sqrt(grad_x**2 + grad_y**2 + 1e-6) # add epsilon for stability
+        return edges
+
+    def forward(self, img_gen, img_ref):
+        """
+        img_gen, img_ref: [B, 3, H, W] in range [-1, 1].
+        Returns: L1 loss between the edge maps of the two images.
+        """
+        edges_gen = self._get_edges(img_gen)
+        edges_ref = self._get_edges(img_ref)
+        return self.l1(edges_gen, edges_ref)
