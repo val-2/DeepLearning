@@ -32,14 +32,22 @@ RANDOM_SEED = 42
 # Peso per la loss L1
 LAMBDA_L1 = 1.0
 # Peso per la loss avversaria
-LAMBDA_ADV = 0.1
+LAMBDA_ADV = 0.05
 # NCE_T = 0.07
 # NCE_FEAT_DIM = 256
 # NCE_NUM_PATCHES = 256
 
 
 # --- Setup del Dispositivo ---
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if torch.cuda.is_available():
+    DEVICE = torch.device("cuda:0")
+    print(f"PyTorch CUDA version: {torch.version.cuda}")
+    print(f"Numero di GPU disponibili: {torch.cuda.device_count()}")
+    for i in range(torch.cuda.device_count()):
+        print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+else:
+    DEVICE = torch.device("cpu")
+print(f"Utilizzo del dispositivo primario: {DEVICE}")
 
 # --- Directory per l'Output ---
 OUTPUT_DIR = "training_output"
@@ -74,9 +82,9 @@ def save_checkpoint(epoch, model_G, optimizer_G, model_D, optimizer_D, loss, is_
     """
     state = {
         'epoch': epoch,
-        'model_G_state_dict': model_G.state_dict(),
+        'model_G_state_dict': model_G.module.state_dict() if isinstance(model_G, nn.DataParallel) else model_G.state_dict(),
         'optimizer_G_state_dict': optimizer_G.state_dict(),
-        'model_D_state_dict': model_D.state_dict(),
+        'model_D_state_dict': model_D.module.state_dict() if isinstance(model_D, nn.DataParallel) else model_D.state_dict(),
         'optimizer_D_state_dict': optimizer_D.state_dict(),
         'loss': loss,
     }
@@ -126,7 +134,11 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device, set_nam
         pokemon_id = batch['idx'][0]
         description = batch['description'][0]
         tokens = tokenizer.convert_ids_to_tokens(token_ids.squeeze(0))
-        generated_image, attention_maps = model(token_ids, return_attentions=True)
+
+        # Assicuriamoci di chiamare il modello non parallelo per l'output delle attenzioni
+        # DataParallel non gestisce bene output multipli come le mappe di attenzione
+        model_to_use = model.module if isinstance(model, nn.DataParallel) else model
+        generated_image, attention_maps = model_to_use(token_ids, return_attentions=True)
 
     # Usa l'ultima mappa di attenzione, è la più raffinata
     if not attention_maps:
@@ -298,6 +310,12 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
     model_G = PikaPikaGen(text_encoder_model_name=MODEL_NAME, noise_dim=NOISE_DIM).to(DEVICE)
     model_D = PatchGANDiscriminator(in_channels=3).to(DEVICE)
 
+    # --- Supporto Multi-GPU ---
+    if torch.cuda.device_count() > 1:
+        print(f"Utilizzo di {torch.cuda.device_count()} GPU con nn.DataParallel.")
+        model_G = nn.DataParallel(model_G)
+        model_D = nn.DataParallel(model_D)
+
     optimizer_G = optim.Adam(model_G.parameters(), lr=LEARNING_RATE, betas=(0.5, 0.999))
     optimizer_D = optim.Adam(model_D.parameters(), lr=LEARNING_RATE, betas=(0.5, 0.999))
 
@@ -329,6 +347,8 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
 
             start_epoch = checkpoint['epoch'] + 1
             best_val_loss = checkpoint.get('loss', float('inf'))
+            if best_val_loss is None:
+                best_val_loss = float('inf')
 
             print(f"Checkpoint caricato. Si riparte dall'epoca {start_epoch}.")
         else:
