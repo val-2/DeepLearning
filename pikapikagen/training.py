@@ -317,7 +317,7 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
             token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
 
             optimizer.zero_grad()
-            generated_images, _ = model(token_ids) # Ignoriamo le attention maps qui
+            generated_images = model(token_ids) # Non chiediamo le attention maps qui
             loss = criterion(generated_images, real_images)
             loss.backward()
             optimizer.step()
@@ -332,7 +332,7 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
         with torch.no_grad():
             for batch in val_loader:
                 token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
-                generated_images, _ = model(token_ids)
+                generated_images = model(token_ids)
                 loss = criterion(generated_images, real_images)
                 val_loss += loss.item()
 
