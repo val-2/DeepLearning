@@ -52,17 +52,25 @@ CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
 IMAGE_DIR = os.path.join(OUTPUT_DIR, "images")
 
 
-def find_latest_checkpoint(checkpoint_dir):
-    """Trova l'ultimo checkpoint in una directory basandosi sul numero di epoca nel nome del file."""
+def find_sorted_checkpoints(checkpoint_dir):
+    """Trova i checkpoint in una directory e li ordina dal più recente al meno recente."""
     list_of_files = glob.glob(os.path.join(checkpoint_dir, 'checkpoint_epoch_*.pth.tar'))
     if not list_of_files:
-        return None
-    try:
-        latest_file = max(list_of_files, key=lambda f: int(os.path.basename(f).split('_')[-1].split('.')[0]))
-        return latest_file
-    except (ValueError, IndexError):
-        print("Attenzione: impossibile determinare l'ultimo checkpoint a causa di nomi file non standard.")
-        return None
+        return []
+
+    valid_checkpoints = []
+    for f in list_of_files:
+        try:
+            epoch = int(os.path.basename(f).split('_')[-1].split('.')[0])
+            valid_checkpoints.append((epoch, f))
+        except (ValueError, IndexError):
+            print(f"Attenzione: impossibile analizzare il numero di epoca dal nome file: {f}")
+
+    # Ordina per epoca in ordine decrescente (dal più recente al più vecchio)
+    valid_checkpoints.sort(key=lambda x: x[0], reverse=True)
+
+    return [file_path for epoch, file_path in valid_checkpoints]
+
 
 def save_checkpoint(epoch, model_G, optimizer_G, loss, is_best=False):
     """
@@ -321,28 +329,40 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
 
     # --- Logica per continuare il training ---
     if continue_from_last_checkpoint:
-        latest_checkpoint_path = find_latest_checkpoint(CHECKPOINT_DIR)
-        if latest_checkpoint_path:
-            print(f"--- Ripresa del training dal checkpoint: {os.path.basename(latest_checkpoint_path)} ---")
-            checkpoint = torch.load(latest_checkpoint_path, map_location=DEVICE)
+        sorted_checkpoints = find_sorted_checkpoints(CHECKPOINT_DIR)
+        checkpoint_loaded = False
+        if sorted_checkpoints:
+            for checkpoint_path in sorted_checkpoints:
+                try:
+                    print(f"--- Ripresa del training dal checkpoint: {os.path.basename(checkpoint_path)} ---")
+                    checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
 
-            # Il nome della chiave per il modello G potrebbe essere il vecchio 'model_state_dict'
-            if 'model_G_state_dict' in checkpoint:
-                model_G.load_state_dict(checkpoint['model_G_state_dict'])
-                optimizer_G.load_state_dict(checkpoint['optimizer_G_state_dict'])
-            elif 'model_state_dict' in checkpoint: # Compatibilità con vecchi checkpoint
-                 model_G.load_state_dict(checkpoint['model_state_dict'])
-                 optimizer_G.load_state_dict(checkpoint['optimizer_state_dict'])
+                    # Il nome della chiave per il modello G potrebbe essere il vecchio 'model_state_dict'
+                    if 'model_G_state_dict' in checkpoint:
+                        model_G.load_state_dict(checkpoint['model_G_state_dict'])
+                        optimizer_G.load_state_dict(checkpoint['optimizer_G_state_dict'])
+                    elif 'model_state_dict' in checkpoint: # Compatibilità con vecchi checkpoint
+                         model_G.load_state_dict(checkpoint['model_state_dict'])
+                         optimizer_G.load_state_dict(checkpoint['optimizer_state_dict'])
 
 
-            start_epoch = checkpoint['epoch'] + 1
-            best_val_loss = checkpoint.get('loss', float('inf'))
-            if best_val_loss is None:
-                best_val_loss = float('inf')
+                    start_epoch = checkpoint['epoch'] + 1
+                    best_val_loss = checkpoint.get('loss', float('inf'))
+                    if best_val_loss is None:
+                        best_val_loss = float('inf')
 
-            print(f"Checkpoint caricato. Si riparte dall'epoca {start_epoch}.")
-        else:
-            print("--- Nessun checkpoint trovato. Inizio un nuovo training da zero. ---")
+                    print(f"Checkpoint caricato. Si riparte dall'epoca {start_epoch}.")
+                    checkpoint_loaded = True
+                    break # Usciamo dal loop se il caricamento ha successo
+                except RuntimeError as e:
+                    print(f"Errore nel caricamento del checkpoint {os.path.basename(checkpoint_path)}: {e}")
+                    print("Il file potrebbe essere corrotto. Tento con il checkpoint precedente, se disponibile.")
+
+        if not checkpoint_loaded:
+            print("--- Nessun checkpoint valido trovato. Inizio un nuovo training da zero. ---")
+    else:
+        print("--- Inizio un nuovo training da zero (opzione 'continue_from_last_checkpoint' disabilitata). ---")
+
 
     final_epoch = start_epoch + epochs_to_run - 1
     print(f"--- Inizio Training (da epoca {start_epoch} a {final_epoch}) ---")
