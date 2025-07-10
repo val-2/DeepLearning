@@ -107,7 +107,7 @@ class CLIPLoss(nn.Module):
             img_denorm = torch.clamp(img_denorm, 0, 1)
 
             # Convert to numpy and then PIL
-            img_np = img_denorm.cpu().numpy().transpose(1, 2, 0)
+            img_np = img_denorm.detach().cpu().numpy().transpose(1, 2, 0)
             img_np = (img_np * 255).astype(np.uint8)
             pil_img = Image.fromarray(img_np)
             pil_images.append(pil_img)
