@@ -362,9 +362,9 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
                     print(f"Checkpoint caricato. Si riparte dall'epoca {start_epoch}.")
                     checkpoint_loaded = True
                     break # Usciamo dal loop se il caricamento ha successo
-                except RuntimeError as e:
+                except Exception as e:
                     print(f"Errore nel caricamento del checkpoint {os.path.basename(checkpoint_path)}: {e}")
-                    print("Il file potrebbe essere corrotto. Tento con il checkpoint precedente, se disponibile.")
+                    print("Il file potrebbe essere corrotto o incompatibile. Tento con il checkpoint precedente, se disponibile.")
 
         if not checkpoint_loaded:
             print("--- Nessun checkpoint valido trovato. Inizio un nuovo training da zero. ---")
