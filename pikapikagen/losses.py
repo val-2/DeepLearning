@@ -30,8 +30,8 @@ class VGGPerceptualLoss(nn.Module):
             param.requires_grad = False
 
         self.l1 = nn.L1Loss()
-        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
-        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1))
+        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1))
 
     def forward(self, img_gen, img_ref):
         """
@@ -42,8 +42,8 @@ class VGGPerceptualLoss(nn.Module):
         gen = (img_gen + 1.0) / 2.0
         ref = (img_ref + 1.0) / 2.0
         # Normalize
-        gen_norm = (gen - self.mean.to(gen.device)) / self.std.to(gen.device)
-        ref_norm = (ref - self.mean.to(ref.device)) / self.std.to(ref.device)
+        gen_norm = (gen - self.mean) / self.std
+        ref_norm = (ref - self.mean) / self.std
 
         loss = 0.0
         x_gen = gen_norm
@@ -109,7 +109,7 @@ class SSIMLoss(nn.Module):
 
         C1 = self.C1.to(img1.device)
         C2 = self.C2.to(img1.device)
-        ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+        ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)) # type: ignore
         return ssim_map
 
     def forward(self, img_gen, img_ref):
@@ -301,11 +301,11 @@ class SobelLoss(nn.Module):
 
         # Convert to grayscale
         # The weights need to be on the same device as the image.
-        grayscale_img = F.conv2d(img, self.rgb_to_gray_weights.to(img.device))
+        grayscale_img = F.conv2d(img, self.rgb_to_gray_weights.to(img.device)) # type: ignore
 
         # Apply Sobel filters. Kernels also need to be on the correct device.
-        grad_x = F.conv2d(grayscale_img, self.kernel_x.to(img.device), padding=1)
-        grad_y = F.conv2d(grayscale_img, self.kernel_y.to(img.device), padding=1)
+        grad_x = F.conv2d(grayscale_img, self.kernel_x.to(img.device), padding=1) # type: ignore
+        grad_y = F.conv2d(grayscale_img, self.kernel_y.to(img.device), padding=1) # type: ignore
 
         # Compute gradient magnitude
         edges = torch.sqrt(grad_x**2 + grad_y**2 + 1e-6) # add epsilon for stability
