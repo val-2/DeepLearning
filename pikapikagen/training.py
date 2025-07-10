@@ -16,6 +16,7 @@ from torchvision import transforms
 from pokemon_dataset import PokemonDataset
 from model import PikaPikaGen
 from losses import VGGPerceptualLoss, SSIMLoss, SobelLoss
+from clip_loss import create_clip_loss
 
 # --- Parametri di Training Fissi ---
 MODEL_NAME = "prajjwal1/bert-mini"
@@ -34,6 +35,7 @@ LAMBDA_L1 = 0.4
 LAMBDA_PERCEPTUAL = 0.005
 LAMBDA_SSIM = 0
 LAMBDA_SOBEL = 1.0
+LAMBDA_CLIP = 0.1
 
 
 # --- Setup del Dispositivo ---
@@ -49,7 +51,7 @@ print(f"Utilizzo del dispositivo primario: {DEVICE}")
 
 # --- Directory per l'Output ---
 OUTPUT_DIR = "training_output"
-CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
+CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, "models")
 IMAGE_DIR = os.path.join(OUTPUT_DIR, "images")
 
 
@@ -277,7 +279,7 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
         epochs_to_run (int): Il numero di epoche per cui eseguire l'addestramento.
         use_multi_gpu (bool): Se True, abilita l'uso di DataParallel se sono disponibili più GPU.
     """
-    if all(l <= 0 for l in [LAMBDA_L1, LAMBDA_PERCEPTUAL, LAMBDA_SSIM, LAMBDA_SOBEL]):
+    if all(l <= 0 for l in [LAMBDA_L1, LAMBDA_PERCEPTUAL, LAMBDA_SSIM, LAMBDA_SOBEL, LAMBDA_CLIP]):
         raise ValueError(
             "Tutti i pesi (lambda) delle loss sono a zero o negativi. "
             "Almeno una loss deve essere abilitata con un peso positivo per l'addestramento."
@@ -331,6 +333,7 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
     criterion_perceptual = VGGPerceptualLoss(device=DEVICE).to(DEVICE)
     criterion_ssim = SSIMLoss().to(DEVICE)
     criterion_sobel = SobelLoss().to(DEVICE)
+    criterion_clip = create_clip_loss(device=str(DEVICE)) if LAMBDA_CLIP > 0 else None
 
     start_epoch = 1
     best_val_loss = float('inf')
@@ -378,10 +381,11 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
     for epoch in range(start_epoch, final_epoch + 1):
         model_G.train()
 
-        train_loss_g, train_loss_l1, train_loss_perceptual, train_loss_ssim, train_loss_sobel = 0.0, 0.0, 0.0, 0.0, 0.0
+        train_loss_g, train_loss_l1, train_loss_perceptual, train_loss_ssim, train_loss_sobel, train_loss_clip = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{final_epoch} [Training]")
         for batch in pbar:
             token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
+            descriptions = batch['description'] if LAMBDA_CLIP > 0 else None
 
             # ---------------------
             #  Training del Generatore
@@ -395,10 +399,11 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
             loss_perceptual = criterion_perceptual(generated_images, real_images) if LAMBDA_PERCEPTUAL > 0 else torch.tensor(0.0, device=DEVICE)
             loss_ssim = criterion_ssim(generated_images, real_images) if LAMBDA_SSIM > 0 else torch.tensor(0.0, device=DEVICE)
             loss_sobel = criterion_sobel(generated_images, real_images) if LAMBDA_SOBEL > 0 else torch.tensor(0.0, device=DEVICE)
+            loss_clip = criterion_clip(generated_images, descriptions) if LAMBDA_CLIP > 0 and criterion_clip is not None else torch.tensor(0.0, device=DEVICE)
 
 
             # Loss totale del generatore
-            loss_G = LAMBDA_L1 * loss_l1 + LAMBDA_PERCEPTUAL * loss_perceptual + LAMBDA_SSIM * loss_ssim + LAMBDA_SOBEL * loss_sobel
+            loss_G = LAMBDA_L1 * loss_l1 + LAMBDA_PERCEPTUAL * loss_perceptual + LAMBDA_SSIM * loss_ssim + LAMBDA_SOBEL * loss_sobel + LAMBDA_CLIP * loss_clip
             loss_G.backward()
             optimizer_G.step()
 
@@ -408,13 +413,15 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
             train_loss_perceptual += loss_perceptual.item()
             train_loss_ssim += loss_ssim.item()
             train_loss_sobel += loss_sobel.item()
+            train_loss_clip += loss_clip.item()
 
             pbar.set_postfix({
                 'G_loss': f"{loss_G.item():.4f}",
                 'L1': f"{loss_l1.item():.4f}",
                 'Perceptual': f"{loss_perceptual.item():.4f}",
                 'SSIM': f"{loss_ssim.item():.4f}",
-                'Sobel': f"{loss_sobel.item():.4f}"
+                'Sobel': f"{loss_sobel.item():.4f}",
+                'CLIP': f"{loss_clip.item():.4f}"
             })
 
         avg_train_loss_g = train_loss_g / len(train_loader)
@@ -422,13 +429,15 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
         avg_train_loss_perceptual = train_loss_perceptual / len(train_loader)
         avg_train_loss_ssim = train_loss_ssim / len(train_loader)
         avg_train_loss_sobel = train_loss_sobel / len(train_loader)
+        avg_train_loss_clip = train_loss_clip / len(train_loader)
 
 
         model_G.eval()
-        val_loss_l1, val_loss_perceptual, val_loss_ssim, val_loss_sobel = 0.0, 0.0, 0.0, 0.0
+        val_loss_l1, val_loss_perceptual, val_loss_ssim, val_loss_sobel, val_loss_clip = 0.0, 0.0, 0.0, 0.0, 0.0
         with torch.no_grad():
             for batch in val_loader:
                 token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
+                descriptions = batch['description'] if LAMBDA_CLIP > 0 else None
                 generated_images = model_G(token_ids)
 
                 if LAMBDA_L1 > 0:
@@ -439,22 +448,26 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
                     val_loss_ssim += criterion_ssim(generated_images, real_images).item()
                 if LAMBDA_SOBEL > 0:
                     val_loss_sobel += criterion_sobel(generated_images, real_images).item()
+                if LAMBDA_CLIP > 0 and criterion_clip is not None:
+                    val_loss_clip += criterion_clip(generated_images, descriptions).item()
 
         avg_val_loss_l1 = val_loss_l1 / len(val_loader) if val_loss_l1 > 0 else 0.0
         avg_val_loss_perceptual = val_loss_perceptual / len(val_loader) if val_loss_perceptual > 0 else 0.0
         avg_val_loss_ssim = val_loss_ssim / len(val_loader) if val_loss_ssim > 0 else 0.0
         avg_val_loss_sobel = val_loss_sobel / len(val_loader) if val_loss_sobel > 0 else 0.0
+        avg_val_loss_clip = val_loss_clip / len(val_loader) if val_loss_clip > 0 else 0.0
 
         # Calcola la loss di validazione totale come somma pesata per il checkpointing
         avg_val_loss = (LAMBDA_L1 * avg_val_loss_l1 +
                         LAMBDA_PERCEPTUAL * avg_val_loss_perceptual +
                         LAMBDA_SSIM * avg_val_loss_ssim +
-                        LAMBDA_SOBEL * avg_val_loss_sobel)
+                        LAMBDA_SOBEL * avg_val_loss_sobel +
+                        LAMBDA_CLIP * avg_val_loss_clip)
 
         print(
             f"Epoch {epoch}/{final_epoch} -> "
-            f"Train G_Loss: {avg_train_loss_g:.4f} (L1: {avg_train_loss_l1:.4f}, Perceptual: {avg_train_loss_perceptual:.4f}, SSIM: {avg_train_loss_ssim:.4f}, Sobel: {avg_train_loss_sobel:.4f}), "
-            f"Val Loss (L1: {avg_val_loss_l1:.4f}, Perceptual: {avg_val_loss_perceptual:.4f}, SSIM: {avg_val_loss_ssim:.4f}, Sobel: {avg_val_loss_sobel:.4f})"
+            f"Train G_Loss: {avg_train_loss_g:.4f} (L1: {avg_train_loss_l1:.4f}, Perceptual: {avg_train_loss_perceptual:.4f}, SSIM: {avg_train_loss_ssim:.4f}, Sobel: {avg_train_loss_sobel:.4f}, CLIP: {avg_train_loss_clip:.4f}), "
+            f"Val Loss (L1: {avg_val_loss_l1:.4f}, Perceptual: {avg_val_loss_perceptual:.4f}, SSIM: {avg_val_loss_ssim:.4f}, Sobel: {avg_val_loss_sobel:.4f}, CLIP: {avg_val_loss_clip:.4f})"
         )
 
         # --- Salvataggio Checkpoint ---
