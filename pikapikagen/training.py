@@ -30,7 +30,7 @@ NUM_VIZ_SAMPLES = 4
 # Seed per la riproducibilità
 RANDOM_SEED = 42
 # Pesi per le diverse loss
-LAMBDA_L1 = 0.0
+LAMBDA_L1 = 0.05
 LAMBDA_PERCEPTUAL = 0.0
 LAMBDA_SSIM = 0.0
 LAMBDA_SOBEL = 1.0
