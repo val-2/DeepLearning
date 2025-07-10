@@ -39,7 +39,7 @@ LAMBDA_SOBEL = 1.0
 # --- Setup del Dispositivo ---
 if torch.cuda.is_available():
     DEVICE = torch.device("cuda:0")
-    print(f"PyTorch CUDA version: {torch.version.cuda}")
+    print(f"PyTorch CUDA version: {torch.version.cuda}")  # type: ignore
     print(f"Numero di GPU disponibili: {torch.cuda.device_count()}")
     for i in range(torch.cuda.device_count()):
         print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
@@ -277,6 +277,12 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
         epochs_to_run (int): Il numero di epoche per cui eseguire l'addestramento.
         use_multi_gpu (bool): Se True, abilita l'uso di DataParallel se sono disponibili più GPU.
     """
+    if all(l <= 0 for l in [LAMBDA_L1, LAMBDA_PERCEPTUAL, LAMBDA_SSIM, LAMBDA_SOBEL]):
+        raise ValueError(
+            "Tutti i pesi (lambda) delle loss sono a zero o negativi. "
+            "Almeno una loss deve essere abilitata con un peso positivo per l'addestramento."
+        )
+
     print("--- Impostazioni di Training ---")
     print(f"Utilizzo del dispositivo: {DEVICE}")
 
@@ -384,14 +390,11 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
 
             generated_images = model_G(token_ids)
 
-            # Loss L1 (ricostruzione)
-            loss_l1 = criterion_l1(generated_images, real_images)
-            # Loss Percettiva
-            loss_perceptual = criterion_perceptual(generated_images, real_images)
-            # Loss SSIM
-            loss_ssim = criterion_ssim(generated_images, real_images)
-            # Loss Sobel
-            loss_sobel = criterion_sobel(generated_images, real_images)
+            # Calcola le loss solo se il loro peso è maggiore di zero
+            loss_l1 = criterion_l1(generated_images, real_images) if LAMBDA_L1 > 0 else torch.tensor(0.0, device=DEVICE)
+            loss_perceptual = criterion_perceptual(generated_images, real_images) if LAMBDA_PERCEPTUAL > 0 else torch.tensor(0.0, device=DEVICE)
+            loss_ssim = criterion_ssim(generated_images, real_images) if LAMBDA_SSIM > 0 else torch.tensor(0.0, device=DEVICE)
+            loss_sobel = criterion_sobel(generated_images, real_images) if LAMBDA_SOBEL > 0 else torch.tensor(0.0, device=DEVICE)
 
 
             # Loss totale del generatore
@@ -427,16 +430,26 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
             for batch in val_loader:
                 token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
                 generated_images = model_G(token_ids)
-                val_loss_l1 += criterion_l1(generated_images, real_images).item()
-                val_loss_perceptual += criterion_perceptual(generated_images, real_images).item()
-                val_loss_ssim += criterion_ssim(generated_images, real_images).item()
-                val_loss_sobel += criterion_sobel(generated_images, real_images).item()
 
-        avg_val_loss_l1 = val_loss_l1 / len(val_loader)
-        avg_val_loss_perceptual = val_loss_perceptual / len(val_loader)
-        avg_val_loss_ssim = val_loss_ssim / len(val_loader)
-        avg_val_loss_sobel = val_loss_sobel / len(val_loader)
-        avg_val_loss = avg_val_loss_l1 # Usiamo L1 per il checkpointing
+                if LAMBDA_L1 > 0:
+                    val_loss_l1 += criterion_l1(generated_images, real_images).item()
+                if LAMBDA_PERCEPTUAL > 0:
+                    val_loss_perceptual += criterion_perceptual(generated_images, real_images).item()
+                if LAMBDA_SSIM > 0:
+                    val_loss_ssim += criterion_ssim(generated_images, real_images).item()
+                if LAMBDA_SOBEL > 0:
+                    val_loss_sobel += criterion_sobel(generated_images, real_images).item()
+
+        avg_val_loss_l1 = val_loss_l1 / len(val_loader) if val_loss_l1 > 0 else 0.0
+        avg_val_loss_perceptual = val_loss_perceptual / len(val_loader) if val_loss_perceptual > 0 else 0.0
+        avg_val_loss_ssim = val_loss_ssim / len(val_loader) if val_loss_ssim > 0 else 0.0
+        avg_val_loss_sobel = val_loss_sobel / len(val_loader) if val_loss_sobel > 0 else 0.0
+
+        # Calcola la loss di validazione totale come somma pesata per il checkpointing
+        avg_val_loss = (LAMBDA_L1 * avg_val_loss_l1 +
+                        LAMBDA_PERCEPTUAL * avg_val_loss_perceptual +
+                        LAMBDA_SSIM * avg_val_loss_ssim +
+                        LAMBDA_SOBEL * avg_val_loss_sobel)
 
         print(
             f"Epoch {epoch}/{final_epoch} -> "
