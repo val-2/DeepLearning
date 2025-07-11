@@ -105,7 +105,7 @@ class DecoderBlock(nn.Module):
         # Blocco di upsampling come da istruzioni
         self.upsample_block = nn.Sequential(
             nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.GroupNorm(1, out_channels), # Equivalente a LayerNorm per feature map (N, C, H, W)
             nn.ReLU(inplace=True)
         )
 
