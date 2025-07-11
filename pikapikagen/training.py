@@ -29,11 +29,11 @@ NUM_VIZ_SAMPLES = 4
 # Seed per la riproducibilità
 RANDOM_SEED = 42
 # Pesi per le diverse loss
-LAMBDA_L1 = 0.0
+LAMBDA_L1 = 1.0
 LAMBDA_PERCEPTUAL = 0.0
 LAMBDA_SSIM = 0
 LAMBDA_SOBEL = 0.0
-LAMBDA_CLIP = 1.0
+LAMBDA_CLIP = 0.0
 
 
 # --- Setup del Dispositivo ---
@@ -111,17 +111,19 @@ def denormalize_image(tensor):
 
 def save_attention_visualization(epoch, model, tokenizer, batch, device, set_name):
     """
-    Genera e salva una visualizzazione dell'attenzione con layout orizzontale.
+    Genera e salva una visualizzazione dell'attenzione multi-livello.
 
-    L'immagine mostra in alto l'immagine generata e in basso una griglia
-    orizzontale dove la stessa immagine è sovrapposta con mappe di calore
-    semi-trasparenti, ciascuna per uno specifico token.
+    L'immagine mostra:
+    1. In alto, l'immagine generata e il prompt.
+    2. Al centro, un bar chart dell'attenzione iniziale (contesto globale).
+    3. In basso, una serie di griglie per ogni strato di attenzione del decoder,
+       che mostrano le mappe di calore sovrapposte all'immagine generata.
 
     Args:
         epoch (int): L'epoca corrente.
         model (PikaPikaGen): Il modello generatore.
         tokenizer: Il tokenizer per decodificare i token.
-        batch (dict): Un batch (dimensione 1) di dati di validazione/training.
+        batch (dict): Un batch (dimensione 1) di dati.
         device (torch.device): Il dispositivo su cui eseguire i calcoli.
         set_name (str): 'train' o 'val', per il titolo e nome del file.
     """
@@ -129,96 +131,100 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device, set_nam
 
     with torch.no_grad():
         token_ids = batch['text'].to(device)
-        # Se il batch ha più elementi, prendi solo il primo per la visualizzazione
-        if token_ids.dim() > 2:
+        attention_mask = batch['attention_mask'].to(device)
+        if token_ids.dim() > 1: # Assicura un batch di 1
              token_ids = token_ids[0].unsqueeze(0)
+             attention_mask = attention_mask[0].unsqueeze(0)
 
         pokemon_id = batch['idx'][0]
         description = batch['description'][0]
-        tokens = tokenizer.convert_ids_to_tokens(token_ids.squeeze(0))
 
-        # Assicuriamoci di chiamare il modello non parallelo per l'output delle attenzioni
-        # DataParallel non gestisce bene output multipli come le mappe di attenzione
+        # Chiamata al modello per ottenere anche le attenzioni
         model_to_use = model.module if isinstance(model, nn.DataParallel) else model
-        generated_image, attention_maps = model_to_use(token_ids, return_attentions=True)
+        generated_image, attention_maps, initial_context_weights = model_to_use(token_ids, attention_mask, return_attentions=True)
 
-    # Usa l'ultima mappa di attenzione, è la più raffinata
-    if not attention_maps:
-        print(f"Epoch {epoch}: No attention maps returned from model. Skipping visualization.")
+    # Filtra le mappe di attenzione non nulle (alcuni blocchi potrebbero non usarle)
+    decoder_attention_maps = [m for m in attention_maps if m is not None]
+
+    if not decoder_attention_maps or initial_context_weights is None:
+        print(f"Epoch {epoch}: Mappe di attenzione non disponibili. Salto la visualizzazione.")
         return
-    last_attn_map = attention_maps[-1].squeeze(0)  # Shape: (H*W, seq_len)
 
-    # Filtra i token per la visualizzazione
+    # --- Prepara i Token per la Visualizzazione ---
+    tokens_all = tokenizer.convert_ids_to_tokens(token_ids.squeeze(0))
     display_tokens = []
-    pad_token_count = 0
-    for i, token in enumerate(tokens):
-        if token in ['[CLS]', '[SEP]']:
-            continue
-        if token == '[PAD]':
-            if pad_token_count < 6:
-                pad_token_count += 1
-            else:
-                continue
-        display_tokens.append({'token': token, 'index': i})
+    for i, token in enumerate(tokens_all):
+        if token not in [tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token]:
+            display_tokens.append({'token': token, 'index': i})
 
-
-    num_display_tokens = len(display_tokens)
-    if num_display_tokens == 0:
-        print(f"Epoch {epoch}: No tokens to display for attention visualization in '{description}'. Skipping.")
+    if not display_tokens:
+        print(f"Epoch {epoch}: Nessun token valido da visualizzare per '{description}'. Salto.")
         return
 
     img_tensor_cpu = denormalize_image(generated_image.squeeze(0).cpu()).permute(1, 2, 0)
+    num_decoder_layers = len(decoder_attention_maps)
+    tokens_to_show = min(len(display_tokens), 8) # Mostra fino a 8 token per strato
 
     # --- Creazione del Plot ---
-    # Calcola la griglia per le attenzioni, favorendo un layout orizzontale
-    cols = min(num_display_tokens, 5)
-    rows = (num_display_tokens + cols - 1) // cols
+    num_main_rows = 2 + num_decoder_layers
+    height_ratios = [2.5, 1.5] + [2] * num_decoder_layers
+    fig = plt.figure(figsize=(22, sum(height_ratios) * 1.2))
+    gs_main = fig.add_gridspec(num_main_rows, 1, height_ratios=height_ratios, hspace=0.8)
 
-    fig_height = 6 + 4 * rows  # Altezza base per immagine principale + altezza per ogni riga di attenzioni
-    fig_width = max(20, 5 * cols) # Larghezza basata sul numero di colonne
-    fig = plt.figure(figsize=(fig_width, fig_height))
+    fig.suptitle(f"Epoch {epoch}: Attention Visualization for Pokémon #{pokemon_id} ({set_name.capitalize()})", fontsize=28, y=0.98)
 
-    # Layout principale: 2 righe. In alto l'immagine, in basso la griglia delle attenzioni
-    gs_main = fig.add_gridspec(2, 1, height_ratios=[1, rows], hspace=0.4)
-    fig.suptitle(f"Epoch {epoch}: Attention for Pokémon #{pokemon_id} ({set_name.capitalize()})", fontsize=24, y=0.98)
-
-    # --- Riga Superiore: Immagine Generata ---
+    # --- 1. Immagine Generata e Prompt (in alto) ---
     ax_main_img = fig.add_subplot(gs_main[0])
     ax_main_img.imshow(img_tensor_cpu)
-    ax_main_img.set_title("Generated Image", fontsize=16)
-    ax_main_img.text(0.5, -0.05, f"Prompt: #{pokemon_id} - {description}", ha='center', va='top', transform=ax_main_img.transAxes, fontsize=14, wrap=True)
+    ax_main_img.set_title("Generated Image", fontsize=20)
+    ax_main_img.text(0.5, -0.05, f"Prompt: {description}", ha='center', va='top', transform=ax_main_img.transAxes, fontsize=16, wrap=True)
     ax_main_img.axis('off')
 
-    # --- Riga Inferiore: Griglia di Sovrapposizioni di Attenzione ---
-    gs_attentions = gs_main[1].subgridspec(rows, cols, wspace=0.1, hspace=0.2)
+    # --- 2. Attenzione Iniziale per il Contesto (bar chart) ---
+    ax_initial_attn = fig.add_subplot(gs_main[1])
+    initial_weights_squeezed = initial_context_weights.squeeze().cpu().numpy()
+    token_strings = [t['token'] for t in display_tokens]
+    token_indices = [t['index'] for t in display_tokens]
+    relevant_weights = initial_weights_squeezed[token_indices]
 
-    for i, token_info in enumerate(display_tokens):
-        row_idx = i // cols
-        col_idx = i % cols
-        ax = fig.add_subplot(gs_attentions[row_idx, col_idx])
+    ax_initial_attn.bar(np.arange(len(token_strings)), relevant_weights, color='skyblue')
+    ax_initial_attn.set_xticks(np.arange(len(token_strings)))
+    ax_initial_attn.set_xticklabels(token_strings, rotation=45, ha="right", fontsize=12)
+    ax_initial_attn.set_title("Initial Context Attention (Global)", fontsize=18)
+    ax_initial_attn.set_ylabel("Weight", fontsize=14)
+    ax_initial_attn.grid(axis='y', linestyle='--', alpha=0.7)
 
-        attn_for_token = last_attn_map[:, token_info['index']].cpu()
-        map_size = int(np.sqrt(attn_for_token.shape[0]))
+    # --- 3. Attenzione per Strato del Decoder (griglie di heatmap) ---
+    for i, layer_attn_map in enumerate(decoder_attention_maps):
+        map_size_flat = layer_attn_map.shape[1] # (B, H*W, seq_len)
+        map_side = int(np.sqrt(map_size_flat))
+        layer_title = f"Decoder Cross-Attention Layer {i+1} (Size: {map_side}x{map_side})"
 
-        if attn_for_token.shape[0] != map_size * map_size:
+        # Crea una subgrid per questo strato e gli assi corrispondenti
+        gs_layer = gs_main[2 + i].subgridspec(1, tokens_to_show, wspace=0.05, hspace=0.05)
+        layer_axes = [fig.add_subplot(gs_layer[0, j]) for j in range(tokens_to_show)]
+
+        # Aggiunge un titolo sopra la riga della subgrid, usando la posizione del primo asse
+        y_pos = layer_axes[0].get_position().y1 + 0.01
+        fig.text(0.5, y_pos, layer_title, ha='center', va='bottom', fontsize=18, weight='bold')
+
+        layer_attn_map_squeezed = layer_attn_map.squeeze(0).cpu() # (H*W, seq_len)
+
+        for j, token_info in enumerate(display_tokens[:tokens_to_show]):
+            ax = layer_axes[j]
+            attn_for_token = layer_attn_map_squeezed[:, token_info['index']]
+            heatmap = attn_for_token.reshape(map_side, map_side)
+
+            # Sovrappone la heatmap all'immagine generata
+            ax.imshow(img_tensor_cpu, extent=(0, 1, 0, 1))
+            ax.imshow(heatmap, cmap='jet', alpha=0.55, extent=(0, 1, 0, 1), interpolation='bilinear')
+
+            ax.set_title(f"'{token_info['token']}'", fontsize=14)
             ax.axis('off')
-            continue
 
-        heatmap = attn_for_token.reshape(map_size, map_size)
-
-        ax.imshow(heatmap, cmap='jet', interpolation='nearest')
-        ax.set_title(f"Focus: '{token_info['token']}'", fontsize=12)
-        ax.axis('off')
-
-    # Pulisce gli assi non usati
-    for i in range(num_display_tokens, rows * cols):
-        row_idx = i // cols
-        col_idx = i % cols
-        fig.add_subplot(gs_attentions[row_idx, col_idx]).axis('off')
-
-    plt.tight_layout(rect=(0, 0, 1, 0.95))
+    plt.tight_layout(rect=(0, 0.03, 1, 0.95))
     save_path = os.path.join(IMAGE_DIR, f"{epoch:03d}_{set_name}_attention_visualization.png")
-    plt.savefig(save_path)
+    plt.savefig(save_path, bbox_inches='tight', pad_inches=0.3)
     plt.close(fig)
 
 
@@ -235,13 +241,14 @@ def save_comparison_grid(epoch, model, batch, set_name, device):
     """
     model.eval()
     token_ids = batch['text'].to(device)
+    attention_mask = batch['attention_mask'].to(device)
     real_images = batch['image']
     pokemon_ids = batch['idx']
     descriptions = batch['description']
     num_images = real_images.size(0)
 
     with torch.no_grad():
-        generated_images = model(token_ids)
+        generated_images = model(token_ids, attention_mask)
 
     fig, axs = plt.subplots(2, num_images, figsize=(4 * num_images, 8.5))
     fig.suptitle(f"Epoch {epoch} - {set_name.capitalize()} Comparison", fontsize=16, y=0.98)
@@ -382,7 +389,9 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
         train_loss_g, train_loss_l1, train_loss_perceptual, train_loss_ssim, train_loss_sobel, train_loss_clip = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{final_epoch} [Training]")
         for batch in pbar:
-            token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
+            token_ids = batch['text'].to(DEVICE)
+            attention_mask = batch['attention_mask'].to(DEVICE)
+            real_images = batch['image'].to(DEVICE)
             descriptions = batch['description'] if LAMBDA_CLIP > 0 else None
 
             # ---------------------
@@ -390,7 +399,7 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
             # ---------------------
             optimizer_G.zero_grad()
 
-            generated_images = model_G(token_ids)
+            generated_images = model_G(token_ids, attention_mask)
 
             # Calcola le loss solo se il loro peso è maggiore di zero
             loss_l1 = criterion_l1(generated_images, real_images) if LAMBDA_L1 > 0 else torch.tensor(0.0, device=DEVICE)
@@ -434,9 +443,11 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
         val_loss_l1, val_loss_perceptual, val_loss_ssim, val_loss_sobel, val_loss_clip = 0.0, 0.0, 0.0, 0.0, 0.0
         with torch.no_grad():
             for batch in val_loader:
-                token_ids, real_images = batch['text'].to(DEVICE), batch['image'].to(DEVICE)
+                token_ids = batch['text'].to(DEVICE)
+                attention_mask = batch['attention_mask'].to(DEVICE)
+                real_images = batch['image'].to(DEVICE)
                 descriptions = batch['description'] if LAMBDA_CLIP > 0 else None
-                generated_images = model_G(token_ids)
+                generated_images = model_G(token_ids, attention_mask)
 
                 if LAMBDA_L1 > 0:
                     val_loss_l1 += criterion_l1(generated_images, real_images).item()

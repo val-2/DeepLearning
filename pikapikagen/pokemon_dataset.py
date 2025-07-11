@@ -1,5 +1,4 @@
 import pandas as pd
-import torch
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 from torchvision import transforms
@@ -148,7 +147,7 @@ if __name__ == "__main__":
 
     # Carica il primo campione
     sample = dataset[0]
-    print(f"Primo campione:")
+    print("Primo campione:")
     print(f"  - Testo shape: {sample['text'].shape}")
     print(f"  - Immagine shape: {sample['image'].shape}")
     print(f"  - Descrizione: {sample['description'][:100]}...")
@@ -161,6 +160,6 @@ if __name__ == "__main__":
 
     # Testa un batch
     batch = next(iter(dataloader))
-    print(f"\nPrimo batch:")
+    print("\nPrimo batch:")
     print(f"  - Testo batch shape: {batch['text'].shape}")
     print(f"  - Immagine batch shape: {batch['image'].shape}")

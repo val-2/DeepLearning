@@ -210,7 +210,7 @@ class ImageDecoder(nn.Module):
         x = self.final_conv(x)
         # x.shape: (B, 3, 256, 256)
         x = self.final_activation(x)
-        return x, attention_maps
+        return x, attention_maps, attention_weights
 
 
 class PikaPikaGen(nn.Module):
@@ -249,8 +249,8 @@ class PikaPikaGen(nn.Module):
         #    Il decoder calcolerà internamente sia il contesto iniziale (ATTENZIONE #1)
         #    sia l'attenzione per-step (ATTENZIONE #2)
         # generated_image.shape: (batch_size, 3, 256, 256)
-        generated_image, attention_maps = self.image_decoder(noise, encoder_output, attention_mask)
+        generated_image, attention_maps, initial_attention_weights = self.image_decoder(noise, encoder_output, attention_mask)
 
         if return_attentions:
-            return generated_image, attention_maps
+            return generated_image, attention_maps, initial_attention_weights
         return generated_image
