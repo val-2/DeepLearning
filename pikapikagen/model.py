@@ -35,7 +35,7 @@ class TextEncoder(nn.Module):
         return encoder_output
 
 
-class CrossAttention(nn.Module):
+class ImageCrossAttention(nn.Module):
     """
     Modulo di Cross-Attention.
     Permette a una sequenza di query (dall'immagine) di "prestare attenzione"
@@ -49,16 +49,16 @@ class CrossAttention(nn.Module):
         )
         self.layer_norm = nn.LayerNorm(embed_dim)
 
-    def forward(self, query, key, value, key_padding_mask=None):
+    def forward(self, image_features, text_features, key_padding_mask=None):
         # query: (B, C, H, W) - Feature dell'immagine (spaziale)
         # key/value: (B, seq_len, embed_dim) - Output dell'encoder di testo
         # key_padding_mask: (B, seq_len) - Maschera dal tokenizer
 
-        B, C, H, W = query.shape
+        B, C, H, W = image_features.shape
 
         # 1. Prepara la query (feature dell'immagine)
         # Reshape da spaziale a sequenza: (B, C, H, W) -> (B, H*W, C)
-        query_seq = query.view(B, C, H * W).permute(0, 2, 1)
+        query_seq = image_features.view(B, C, H * W).permute(0, 2, 1)
         query_norm = self.layer_norm(query_seq)
 
         # 2. Prepara la maschera di padding per l'attenzione
@@ -72,8 +72,8 @@ class CrossAttention(nn.Module):
         # 3. Applica l'attenzione
         attn_output, attn_weights = self.attention(
             query=query_norm,
-            key=key,
-            value=value,
+            key=text_features,
+            value=text_features,
             key_padding_mask=mask,
             need_weights=True
         )
@@ -97,7 +97,9 @@ class DecoderBlock(nn.Module):
         if self.use_attention:
             if in_channels != text_embed_dim:
                 raise ValueError("in_channels must be equal to text_embedding_dim for attention.")
-            self.cross_attention = CrossAttention(embed_dim=in_channels, num_heads=nhead)
+            self.cross_attention = ImageCrossAttention(embed_dim=in_channels, num_heads=nhead)
+            # Nuova convolution per fondere le feature dell'immagine con il contesto del testo
+            self.fusion_conv = nn.Conv2d(in_channels * 2, in_channels, kernel_size=1, bias=False)
 
         # 1. Upsampling Layer: We use a simple ConvTranspose2d to double the spatial dimensions.
         self.up_conv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2)
@@ -122,12 +124,15 @@ class DecoderBlock(nn.Module):
 
             # La cross-attention ora gestisce internamente il reshaping e la maschera
             attn_output, attn_weights = self.cross_attention(
-                query=x,
-                key=encoder_output,
-                value=encoder_output,
+                image_features=x,
+                text_features=encoder_output,
                 key_padding_mask=attention_mask
             )
-            x = x + attn_output # Additive (residual) connection
+
+            # Concatena le feature originali (x) con il contesto (attn_output)
+            # e le fonde con una convoluzione 1x1.
+            fused_features = torch.cat([x, attn_output], dim=1) # Shape: (B, 2*C, H, W)
+            x = self.fusion_conv(fused_features) # Shape: (B, C, H, W)
 
         # Apply the U-Net style sequence
         x = self.up_conv(x)
