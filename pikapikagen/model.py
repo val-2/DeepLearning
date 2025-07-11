@@ -88,7 +88,8 @@ class ImageCrossAttention(nn.Module):
 
 class DecoderBlock(nn.Module):
     """
-    U-Net-style decoder block: Upsampling -> Double Convolution.
+    Blocco del Generatore come da istruzioni:
+    Attenzione (opzionale) -> Fusione -> Upsampling (ConvTranspose) -> Normalizzazione -> Attivazione.
     """
     def __init__(self, in_channels, out_channels, use_attention=True, text_embed_dim=256, nhead=4):
         super().__init__()
@@ -101,15 +102,9 @@ class DecoderBlock(nn.Module):
             # Nuova convolution per fondere le feature dell'immagine con il contesto del testo
             self.fusion_conv = nn.Conv2d(in_channels * 2, in_channels, kernel_size=1, bias=False)
 
-        # 1. Upsampling Layer: We use a simple ConvTranspose2d to double the spatial dimensions.
-        self.up_conv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2)
-
-        # 2. Double Convolution Block: Two standard convolutions to process features at the new scale.
-        self.conv_block = nn.Sequential(
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+        # Blocco di upsampling come da istruzioni
+        self.upsample_block = nn.Sequential(
+            nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True)
         )
@@ -117,12 +112,9 @@ class DecoderBlock(nn.Module):
     def forward(self, x, encoder_output=None, attention_mask=None):
         attn_weights = None
         if self.use_attention:
-            if encoder_output is None:
-                raise ValueError("encoder_output must be provided when use_attention is True.")
-            if attention_mask is None:
-                raise ValueError("attention_mask must be provided when use_attention is True.")
+            if encoder_output is None or attention_mask is None:
+                raise ValueError("encoder_output and attention_mask must be provided for attention.")
 
-            # La cross-attention ora gestisce internamente il reshaping e la maschera
             attn_output, attn_weights = self.cross_attention(
                 image_features=x,
                 text_features=encoder_output,
@@ -135,8 +127,7 @@ class DecoderBlock(nn.Module):
             x = self.fusion_conv(fused_features) # Shape: (B, C, H, W)
 
         # Apply the U-Net style sequence
-        x = self.up_conv(x)
-        x = self.conv_block(x)
+        x = self.upsample_block(x)
         return x, attn_weights
 
 
@@ -160,7 +151,7 @@ class ImageDecoder(nn.Module):
         # Input: (B, noise_dim + text_embed_dim) -> Output: (B, 256 * 4 * 4)
         self.initial_projection = nn.Linear(noise_dim + text_embed_dim, 256 * 4 * 4)
 
-        # Blocchi del decoder U-Net style, con attenzione fin dall'inizio.
+        # Blocchi del decoder basati su GeneratorBlock
         self.blocks = nn.ModuleList([
             # Input: (B, 256, 4, 4)   -> Output: (B, 256, 8, 8)
             DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
