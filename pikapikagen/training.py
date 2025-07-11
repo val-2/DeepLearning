@@ -30,7 +30,7 @@ NUM_WORKERS = 0
 # Numero di campioni da visualizzare nelle griglie di confronto
 NUM_VIZ_SAMPLES = 4
 # Frequenza di salvataggio checkpoint e visualizzazioni
-CHECKPOINT_EVERY_N_EPOCHS = 10
+CHECKPOINT_EVERY_N_EPOCHS = 5
 # Seed per la riproducibilità
 RANDOM_SEED = 42
 # Pesi per le diverse loss ausiliarie del generatore
