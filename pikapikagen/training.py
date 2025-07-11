@@ -2,7 +2,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, TensorDataset
 from transformers import AutoTokenizer
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -293,7 +293,7 @@ def save_comparison_grid(epoch, model, batch, set_name, device):
     plt.close(fig)
 
 
-def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_EPOCHS, use_multi_gpu: bool = True):
+def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_EPOCHS, use_multi_gpu: bool = True, use_geometric_aug: bool = True, use_color_aug: bool = True, use_blur_aug: bool = False, use_cutout_aug: bool = True):
     """
     Funzione principale per l'addestramento e la validazione del modello PikaPikaGen.
 
@@ -302,6 +302,10 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
                                               checkpoint. Se non lo trova, inizia da zero.
         epochs_to_run (int): Il numero di epoche per cui eseguire l'addestramento.
         use_multi_gpu (bool): Se True, abilita l'uso di DataParallel se sono disponibili più GPU.
+        use_geometric_aug (bool): Abilita le aumentazioni geometriche.
+        use_color_aug (bool): Abilita le aumentazioni di colore.
+        use_blur_aug (bool): Abilita l'aumentazione di sfocatura.
+        use_cutout_aug (bool): Abilita l'aumentazione di cutout.
     """
     if all(loss <= 0 for loss in [LAMBDA_L1, LAMBDA_PERCEPTUAL, LAMBDA_SSIM, LAMBDA_SOBEL, LAMBDA_CLIP]):
         raise ValueError(
@@ -317,15 +321,43 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
-    # --- Divisione deterministica del Dataset ---
-    full_dataset = PokemonDataset(tokenizer=tokenizer)
-    train_size = int(TRAIN_VAL_SPLIT * len(full_dataset))
-    val_size = len(full_dataset) - train_size
-    train_dataset, val_dataset = random_split(
-        full_dataset,
+    # --- Creazione dei Dataset ---
+    # Crea un'istanza per il training con le aumentazioni attive
+    train_full_dataset = PokemonDataset(
+        tokenizer=tokenizer,
+        use_geometric_aug=use_geometric_aug,
+        use_color_aug=use_color_aug,
+        use_blur_aug=use_blur_aug,
+        use_cutout_aug=use_cutout_aug
+    )
+    # Crea un'istanza per la validazione SENZA aumentazioni per una valutazione stabile
+    val_full_dataset = PokemonDataset(
+        tokenizer=tokenizer,
+        use_geometric_aug=False,
+        use_color_aug=False,
+        use_blur_aug=False,
+        use_cutout_aug=False
+    )
+
+    # --- Divisione deterministica degli indici ---
+    # Assicurati che entrambi i dataset abbiano la stessa lunghezza
+    assert len(train_full_dataset) == len(val_full_dataset)
+    dataset_size = len(train_full_dataset)
+    train_size = int(TRAIN_VAL_SPLIT * dataset_size)
+    val_size = dataset_size - train_size
+
+    # Usa random_split su un range di indici per ottenere Subset di indici
+    # in modo deterministico e disgiunto.
+    train_indices_subset, val_indices_subset = random_split(
+        TensorDataset(torch.arange(dataset_size)),  # type: ignore
         [train_size, val_size],
         generator=torch.Generator().manual_seed(RANDOM_SEED)
     )
+
+    # Crea i dataset finali usando i Subset degli indici sui rispettivi dataset
+    train_dataset = torch.utils.data.Subset(train_full_dataset, train_indices_subset.indices)
+    val_dataset = torch.utils.data.Subset(val_full_dataset, val_indices_subset.indices)
+
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True)
@@ -523,5 +555,9 @@ if __name__ == "__main__":
     train(
         continue_from_last_checkpoint=True,
         epochs_to_run=100,
-        use_multi_gpu=True
+        use_multi_gpu=True,
+        use_geometric_aug=True,
+        use_color_aug=True,
+        use_blur_aug=False,
+        use_cutout_aug=True
     )
