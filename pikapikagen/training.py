@@ -31,11 +31,11 @@ SAVE_EVERY_N_EPOCHS = 5
 # Seed per la riproducibilità
 RANDOM_SEED = 42
 # Pesi per le diverse loss
-LAMBDA_L1 = 1.0
+LAMBDA_L1 = 0.0
 LAMBDA_PERCEPTUAL = 0.0
 LAMBDA_SSIM = 0
 LAMBDA_SOBEL = 0.0
-LAMBDA_CLIP = 0.0
+LAMBDA_CLIP = 1.0
 
 USE_GEOMETRIC_AUG = False
 USE_COLOR_AUG = False
