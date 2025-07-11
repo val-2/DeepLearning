@@ -43,6 +43,12 @@ if torch.cuda.is_available():
     print(f"Numero di GPU disponibili: {torch.cuda.device_count()}")
     for i in range(torch.cuda.device_count()):
         print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+elif torch.xpu.is_available():
+    DEVICE = torch.device("xpu")
+    print(f"PyTorch XPU version: {torch.version.xpu}")  # type: ignore
+    print(f"Numero di XPU disponibili: {torch.xpu.device_count()}")
+    for i in range(torch.xpu.device_count()):
+        print(f"  XPU {i}: {torch.xpu.get_device_name(i)}")
 else:
     DEVICE = torch.device("cpu")
 print(f"Utilizzo del dispositivo primario: {DEVICE}")
@@ -111,21 +117,13 @@ def denormalize_image(tensor):
 
 def save_attention_visualization(epoch, model, tokenizer, batch, device, set_name):
     """
-    Genera e salva una visualizzazione dell'attenzione multi-livello.
+    Genera e salva una visualizzazione dell'attenzione multi-livello in stile griglia.
 
     L'immagine mostra:
     1. In alto, l'immagine generata e il prompt.
-    2. Al centro, un bar chart dell'attenzione iniziale (contesto globale).
-    3. In basso, una serie di griglie per ogni strato di attenzione del decoder,
-       che mostrano le mappe di calore sovrapposte all'immagine generata.
-
-    Args:
-        epoch (int): L'epoca corrente.
-        model (PikaPikaGen): Il modello generatore.
-        tokenizer: Il tokenizer per decodificare i token.
-        batch (dict): Un batch (dimensione 1) di dati.
-        device (torch.device): Il dispositivo su cui eseguire i calcoli.
-        set_name (str): 'train' o 'val', per il titolo e nome del file.
+    2. Sotto, un bar chart dell'attenzione iniziale (contesto globale).
+    3. Di seguito, una serie di griglie, una per ogni strato di attenzione del decoder.
+       Ciascuna griglia mostra le mappe di calore pure per ogni token rilevante.
     """
     model.eval()
 
@@ -139,22 +137,19 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device, set_nam
         pokemon_id = batch['idx'][0]
         description = batch['description'][0]
 
-        # Chiamata al modello per ottenere anche le attenzioni
         model_to_use = model.module if isinstance(model, nn.DataParallel) else model
         generated_image, attention_maps, initial_context_weights = model_to_use(token_ids, attention_mask, return_attentions=True)
 
-    # Filtra le mappe di attenzione non nulle (alcuni blocchi potrebbero non usarle)
     decoder_attention_maps = [m for m in attention_maps if m is not None]
 
     if not decoder_attention_maps or initial_context_weights is None:
         print(f"Epoch {epoch}: Mappe di attenzione non disponibili. Salto la visualizzazione.")
         return
 
-    # --- Prepara i Token per la Visualizzazione ---
     tokens_all = tokenizer.convert_ids_to_tokens(token_ids.squeeze(0))
     display_tokens = []
     for i, token in enumerate(tokens_all):
-        if token not in [tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token]:
+        if token not in [tokenizer.sep_token, tokenizer.pad_token] and attention_mask[0, i] == 1:
             display_tokens.append({'token': token, 'index': i})
 
     if not display_tokens:
@@ -163,21 +158,27 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device, set_nam
 
     img_tensor_cpu = denormalize_image(generated_image.squeeze(0).cpu()).permute(1, 2, 0)
     num_decoder_layers = len(decoder_attention_maps)
-    tokens_to_show = min(len(display_tokens), 8) # Mostra fino a 8 token per strato
+    num_tokens = len(display_tokens)
 
     # --- Creazione del Plot ---
-    num_main_rows = 2 + num_decoder_layers
-    height_ratios = [2.5, 1.5] + [2] * num_decoder_layers
-    fig = plt.figure(figsize=(22, sum(height_ratios) * 1.2))
-    gs_main = fig.add_gridspec(num_main_rows, 1, height_ratios=height_ratios, hspace=0.8)
+    # Calcola dinamicamente layout e dimensioni
+    cols = min(num_tokens, 8)
+    rows_per_layer = (num_tokens + cols - 1) // cols
+    num_main_rows = 2 + num_decoder_layers # Immagine, Bar chart, e N layer di attenzione
+    # Altezza per immagine, bar chart, e poi per ogni riga di ogni layer
+    height_ratios = [3, 2] + [2 * rows_per_layer] * num_decoder_layers
+    fig_height = sum(height_ratios)
+    fig_width = max(20, 2.5 * cols)
 
-    fig.suptitle(f"Epoch {epoch}: Attention Visualization for Pokémon #{pokemon_id} ({set_name.capitalize()})", fontsize=28, y=0.98)
+    fig = plt.figure(figsize=(fig_width, fig_height))
+    gs_main = fig.add_gridspec(num_main_rows, 1, height_ratios=height_ratios, hspace=0.6)
+    fig.suptitle(f"Epoch {epoch}: Attention Visualization for Pokémon #{pokemon_id} ({set_name.capitalize()})", fontsize=24, y=0.99)
 
-    # --- 1. Immagine Generata e Prompt (in alto) ---
+    # --- 1. Immagine Generata e Prompt ---
     ax_main_img = fig.add_subplot(gs_main[0])
     ax_main_img.imshow(img_tensor_cpu)
-    ax_main_img.set_title("Generated Image", fontsize=20)
-    ax_main_img.text(0.5, -0.05, f"Prompt: {description}", ha='center', va='top', transform=ax_main_img.transAxes, fontsize=16, wrap=True)
+    ax_main_img.set_title("Generated Image", fontsize=18)
+    ax_main_img.text(0.5, -0.1, f"Prompt: {description}", ha='center', va='top', transform=ax_main_img.transAxes, fontsize=14, wrap=True)
     ax_main_img.axis('off')
 
     # --- 2. Attenzione Iniziale per il Contesto (bar chart) ---
@@ -186,45 +187,48 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device, set_nam
     token_strings = [t['token'] for t in display_tokens]
     token_indices = [t['index'] for t in display_tokens]
     relevant_weights = initial_weights_squeezed[token_indices]
-
     ax_initial_attn.bar(np.arange(len(token_strings)), relevant_weights, color='skyblue')
     ax_initial_attn.set_xticks(np.arange(len(token_strings)))
-    ax_initial_attn.set_xticklabels(token_strings, rotation=45, ha="right", fontsize=12)
-    ax_initial_attn.set_title("Initial Context Attention (Global)", fontsize=18)
-    ax_initial_attn.set_ylabel("Weight", fontsize=14)
+    ax_initial_attn.set_xticklabels(token_strings, rotation=45, ha="right", fontsize=10)
+    ax_initial_attn.set_title("Initial Context Attention (Global)", fontsize=16)
+    ax_initial_attn.set_ylabel("Weight", fontsize=12)
     ax_initial_attn.grid(axis='y', linestyle='--', alpha=0.7)
 
     # --- 3. Attenzione per Strato del Decoder (griglie di heatmap) ---
     for i, layer_attn_map in enumerate(decoder_attention_maps):
-        map_size_flat = layer_attn_map.shape[1] # (B, H*W, seq_len)
+        map_size_flat = layer_attn_map.shape[1]
         map_side = int(np.sqrt(map_size_flat))
         layer_title = f"Decoder Cross-Attention Layer {i+1} (Size: {map_side}x{map_side})"
 
-        # Crea una subgrid per questo strato e gli assi corrispondenti
-        gs_layer = gs_main[2 + i].subgridspec(1, tokens_to_show, wspace=0.05, hspace=0.05)
-        layer_axes = [fig.add_subplot(gs_layer[0, j]) for j in range(tokens_to_show)]
+        # Crea una subgrid per questo strato
+        gs_layer = gs_main[2 + i].subgridspec(rows_per_layer, cols, wspace=0.1, hspace=0.4)
 
-        # Aggiunge un titolo sopra la riga della subgrid, usando la posizione del primo asse
-        y_pos = layer_axes[0].get_position().y1 + 0.01
-        fig.text(0.5, y_pos, layer_title, ha='center', va='bottom', fontsize=18, weight='bold')
+        # Crea tutti gli assi per la griglia
+        axes_in_layer = [fig.add_subplot(gs_layer[r, c]) for r in range(rows_per_layer) for c in range(cols)]
 
-        layer_attn_map_squeezed = layer_attn_map.squeeze(0).cpu() # (H*W, seq_len)
+        # Usa la posizione del primo asse per il titolo
+        if axes_in_layer:
+            y_pos = axes_in_layer[0].get_position().y1
+            fig.text(0.5, y_pos, layer_title, ha='center', va='bottom', fontsize=16, weight='bold')
 
-        for j, token_info in enumerate(display_tokens[:tokens_to_show]):
-            ax = layer_axes[j]
+        layer_attn_map_squeezed = layer_attn_map.squeeze(0).cpu()
+
+        for j, token_info in enumerate(display_tokens):
+            ax = axes_in_layer[j]
             attn_for_token = layer_attn_map_squeezed[:, token_info['index']]
             heatmap = attn_for_token.reshape(map_side, map_side)
-
-            # Sovrappone la heatmap all'immagine generata
-            ax.imshow(img_tensor_cpu, extent=(0, 1, 0, 1))
-            ax.imshow(heatmap, cmap='jet', alpha=0.55, extent=(0, 1, 0, 1), interpolation='bilinear')
-
-            ax.set_title(f"'{token_info['token']}'", fontsize=14)
+            ax.imshow(heatmap, cmap='jet', interpolation='bilinear')
+            ax.set_title(f"'{token_info['token']}'", fontsize=12)
             ax.axis('off')
 
-    plt.tight_layout(rect=(0, 0.03, 1, 0.95))
+        # Pulisce gli assi non usati nella griglia
+        for j in range(num_tokens, len(axes_in_layer)):
+            axes_in_layer[j].axis('off')
+
+
+    plt.tight_layout(rect=(0, 0.03, 1, 0.97))
     save_path = os.path.join(IMAGE_DIR, f"{epoch:03d}_{set_name}_attention_visualization.png")
-    plt.savefig(save_path, bbox_inches='tight', pad_inches=0.3)
+    plt.savefig(save_path, bbox_inches='tight')
     plt.close(fig)
 
 
