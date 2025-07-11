@@ -34,9 +34,9 @@ SAVE_EVERY_N_EPOCHS = 1
 # Seed per la riproducibilità
 RANDOM_SEED = 42
 # Pesi per le diverse loss ausiliarie del generatore
-LAMBDA_L1 = 1.0
-LAMBDA_PERCEPTUAL = 0.5
-LAMBDA_SSIM = 0.2
+LAMBDA_L1 = 0.5
+LAMBDA_PERCEPTUAL = 0
+LAMBDA_SSIM = 0.0
 LAMBDA_SOBEL = 1.0
 LAMBDA_CLIP = 0.0
 # Parametri per la loss del discriminatore
@@ -487,9 +487,10 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = 100, 
             loss_perceptual = criterion_perceptual(generated_images, real_images) if LAMBDA_PERCEPTUAL > 0 else torch.tensor(0.0, device=DEVICE)
             loss_ssim = criterion_ssim(generated_images, real_images) if LAMBDA_SSIM > 0 else torch.tensor(0.0, device=DEVICE)
             loss_sobel = criterion_sobel(generated_images, real_images) if LAMBDA_SOBEL > 0 else torch.tensor(0.0, device=DEVICE)
+            loss_clip = criterion_clip(generated_images, batch['description']) if criterion_clip is not None else torch.tensor(0.0, device=DEVICE)
             
             # Loss totale del generatore
-            loss_G = loss_g_gan + LAMBDA_L1 * loss_l1 + LAMBDA_PERCEPTUAL * loss_perceptual + LAMBDA_SSIM * loss_ssim + LAMBDA_SOBEL * loss_sobel
+            loss_G = loss_g_gan + LAMBDA_L1 * loss_l1 + LAMBDA_PERCEPTUAL * loss_perceptual + LAMBDA_SSIM * loss_ssim + LAMBDA_SOBEL * loss_sobel + LAMBDA_CLIP * loss_clip
             loss_G.backward()
             optimizer_G.step()
             
