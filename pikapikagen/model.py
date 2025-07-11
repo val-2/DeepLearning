@@ -39,19 +39,51 @@ class CrossAttention(nn.Module):
     """
     Modulo di Cross-Attention.
     Permette a una sequenza di query (dall'immagine) di "prestare attenzione"
-    a una sequenza di key/value (dal testo).
+    a una sequenza di key/value (dal testo), gestendo internamente
+    il reshaping dei tensori e la maschera di padding.
     """
     def __init__(self, embed_dim, num_heads):
         super().__init__()
         self.attention = nn.MultiheadAttention(
             embed_dim=embed_dim, num_heads=num_heads, batch_first=True
         )
+        self.layer_norm = nn.LayerNorm(embed_dim)
 
-    def forward(self, query, key, value):
-        # query: (batch_size, query_len, embed_dim) - Feature dell'immagine
-        # key/value: (batch_size, kv_len, embed_dim) - Output dell'encoder di testo
-        attn_output, attn_weights = self.attention(query, key, value, need_weights=True)
-        return attn_output, attn_weights
+    def forward(self, query, key, value, key_padding_mask=None):
+        # query: (B, C, H, W) - Feature dell'immagine (spaziale)
+        # key/value: (B, seq_len, embed_dim) - Output dell'encoder di testo
+        # key_padding_mask: (B, seq_len) - Maschera dal tokenizer
+
+        B, C, H, W = query.shape
+
+        # 1. Prepara la query (feature dell'immagine)
+        # Reshape da spaziale a sequenza: (B, C, H, W) -> (B, H*W, C)
+        query_seq = query.view(B, C, H * W).permute(0, 2, 1)
+        query_norm = self.layer_norm(query_seq)
+
+        # 2. Prepara la maschera di padding per l'attenzione
+        # La maschera di HuggingFace è 1 per i token reali, 0 per il padding.
+        # MultiheadAttention si aspetta True per le posizioni da ignorare.
+        if key_padding_mask is not None:
+            mask = (key_padding_mask == 0)
+        else:
+            mask = None
+
+        # 3. Applica l'attenzione
+        attn_output, attn_weights = self.attention(
+            query=query_norm,
+            key=key,
+            value=value,
+            key_padding_mask=mask,
+            need_weights=True
+        )
+        # attn_output: (B, H*W, C)
+
+        # 4. Riconverti l'output nella forma spaziale originale
+        # (B, H*W, C) -> (B, C, H*W) -> (B, C, H, W)
+        attn_output_spatial = attn_output.permute(0, 2, 1).view(B, C, H, W)
+
+        return attn_output_spatial, attn_weights
 
 
 class DecoderBlock(nn.Module):
@@ -63,11 +95,9 @@ class DecoderBlock(nn.Module):
         self.use_attention = use_attention
 
         if self.use_attention:
-            # The cross-attention mechanism remains the same
             if in_channels != text_embed_dim:
                 raise ValueError("in_channels must be equal to text_embedding_dim for attention.")
             self.cross_attention = CrossAttention(embed_dim=in_channels, num_heads=nhead)
-            self.layer_norm = nn.LayerNorm(in_channels)
 
         # 1. Upsampling Layer: We use a simple ConvTranspose2d to double the spatial dimensions.
         self.up_conv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2)
@@ -82,15 +112,21 @@ class DecoderBlock(nn.Module):
             nn.ReLU(inplace=True)
         )
 
-    def forward(self, x, encoder_output=None):
+    def forward(self, x, encoder_output=None, attention_mask=None):
         attn_weights = None
         if self.use_attention:
             if encoder_output is None:
                 raise ValueError("encoder_output must be provided when use_attention is True.")
-            B, C, H, W = x.shape
-            x_norm = self.layer_norm(x.reshape(B, C, H * W).permute(0, 2, 1))
-            attn_output, attn_weights = self.cross_attention(query=x_norm, key=encoder_output, value=encoder_output)
-            attn_output = attn_output.permute(0, 2, 1).reshape(B, C, H, W)
+            if attention_mask is None:
+                raise ValueError("attention_mask must be provided when use_attention is True.")
+
+            # La cross-attention ora gestisce internamente il reshaping e la maschera
+            attn_output, attn_weights = self.cross_attention(
+                query=x,
+                key=encoder_output,
+                value=encoder_output,
+                key_padding_mask=attention_mask
+            )
             x = x + attn_output # Additive (residual) connection
 
         # Apply the U-Net style sequence
@@ -140,9 +176,10 @@ class ImageDecoder(nn.Module):
         self.final_conv = nn.Conv2d(32, final_image_channels, kernel_size=3, padding=1)
         self.final_activation = nn.Tanh()
 
-    def forward(self, noise, encoder_output_full):
+    def forward(self, noise, encoder_output_full, attention_mask):
         # noise.shape: (B, noise_dim)
         # encoder_output_full.shape: (B, seq_len, text_embed_dim)
+        # attention_mask.shape: (B, seq_len)
 
         # 1. Calcola il vettore di contesto iniziale con una media pesata (ATTENZIONE #1)
         # attention_weights.shape: (B, seq_len, 1)
@@ -164,8 +201,9 @@ class ImageDecoder(nn.Module):
         attention_maps = []
         for block in self.blocks:
              encoder_ctx = encoder_output_full if block.use_attention else None
+             mask_ctx = attention_mask if block.use_attention else None
              # La shape di x viene upsamplata in ogni blocco (es. 4x4 -> 8x8)
-             x, attn_weights = block(x, encoder_ctx)
+             x, attn_weights = block(x, encoder_ctx, mask_ctx)
 
              if attn_weights is not None:
                 # attn_weights.shape: (B, H*W, seq_len)
@@ -199,8 +237,9 @@ class PikaPikaGen(nn.Module):
 
         self.noise_dim = noise_dim
 
-    def forward(self, token_ids, return_attentions=False):
+    def forward(self, token_ids, attention_mask, return_attentions=False):
         # token_ids.shape: (batch_size, seq_len)
+        # attention_mask.shape: (batch_size, seq_len)
         # Genera rumore casuale per il batch
         batch_size = token_ids.size(0)
         # noise.shape: (batch_size, noise_dim)
@@ -214,7 +253,7 @@ class PikaPikaGen(nn.Module):
         #    Il decoder calcolerà internamente sia il contesto iniziale (ATTENZIONE #1)
         #    sia l'attenzione per-step (ATTENZIONE #2)
         # generated_image.shape: (batch_size, 3, 256, 256)
-        generated_image, attention_maps = self.image_decoder(noise, encoder_output)
+        generated_image, attention_maps = self.image_decoder(noise, encoder_output, attention_mask)
 
         if return_attentions:
             return generated_image, attention_maps
