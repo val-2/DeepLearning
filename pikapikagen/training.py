@@ -26,6 +26,8 @@ TRAIN_VAL_SPLIT = 0.9
 NUM_WORKERS = 0
 # Numero di campioni da visualizzare nelle griglie di confronto
 NUM_VIZ_SAMPLES = 4
+# Frequenza di salvataggio checkpoint e visualizzazioni
+SAVE_EVERY_N_EPOCHS = 5
 # Seed per la riproducibilità
 RANDOM_SEED = 42
 # Pesi per le diverse loss
@@ -293,7 +295,7 @@ def save_comparison_grid(epoch, model, batch, set_name, device):
     plt.close(fig)
 
 
-def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_EPOCHS, use_multi_gpu: bool = True, use_geometric_aug: bool = True, use_color_aug: bool = True, use_blur_aug: bool = False, use_cutout_aug: bool = True):
+def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_EPOCHS, use_multi_gpu: bool = True, use_geometric_aug: bool = True, use_color_aug: bool = True, use_blur_aug: bool = False, use_cutout_aug: bool = True, save_every_n_epochs: int = SAVE_EVERY_N_EPOCHS):
     """
     Funzione principale per l'addestramento e la validazione del modello PikaPikaGen.
 
@@ -306,6 +308,8 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
         use_color_aug (bool): Abilita le aumentazioni di colore.
         use_blur_aug (bool): Abilita l'aumentazione di sfocatura.
         use_cutout_aug (bool): Abilita l'aumentazione di cutout.
+        save_every_n_epochs (int): La frequenza (in epoche) con cui salvare i checkpoint
+                                   e generare le visualizzazioni.
     """
     if all(loss <= 0 for loss in [LAMBDA_L1, LAMBDA_PERCEPTUAL, LAMBDA_SSIM, LAMBDA_SOBEL, LAMBDA_CLIP]):
         raise ValueError(
@@ -490,58 +494,66 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
         avg_train_loss_clip = train_loss_clip / len(train_loader)
 
 
-        model_G.eval()
-        val_loss_l1, val_loss_perceptual, val_loss_ssim, val_loss_sobel, val_loss_clip = 0.0, 0.0, 0.0, 0.0, 0.0
-        with torch.no_grad():
-            for batch in val_loader:
-                token_ids = batch['text'].to(DEVICE)
-                attention_mask = batch['attention_mask'].to(DEVICE)
-                real_images = batch['image'].to(DEVICE)
-                descriptions = batch['description'] if LAMBDA_CLIP > 0 else None
-                generated_images = model_G(token_ids, attention_mask)
+        # Esegui la validazione, il salvataggio e la visualizzazione solo ogni N epoche o all'ultima epoca
+        if epoch % save_every_n_epochs == 0 or epoch == final_epoch:
+            model_G.eval()
+            val_loss_l1, val_loss_perceptual, val_loss_ssim, val_loss_sobel, val_loss_clip = 0.0, 0.0, 0.0, 0.0, 0.0
+            with torch.no_grad():
+                for batch in val_loader:
+                    token_ids = batch['text'].to(DEVICE)
+                    attention_mask = batch['attention_mask'].to(DEVICE)
+                    real_images = batch['image'].to(DEVICE)
+                    descriptions = batch['description'] if LAMBDA_CLIP > 0 else None
+                    generated_images = model_G(token_ids, attention_mask)
 
-                if LAMBDA_L1 > 0:
-                    val_loss_l1 += criterion_l1(generated_images, real_images).item()
-                if LAMBDA_PERCEPTUAL > 0:
-                    val_loss_perceptual += criterion_perceptual(generated_images, real_images).item()
-                if LAMBDA_SSIM > 0:
-                    val_loss_ssim += criterion_ssim(generated_images, real_images).item()
-                if LAMBDA_SOBEL > 0:
-                    val_loss_sobel += criterion_sobel(generated_images, real_images).item()
-                if LAMBDA_CLIP > 0 and criterion_clip is not None:
-                    val_loss_clip += criterion_clip(generated_images, descriptions).item()
+                    if LAMBDA_L1 > 0:
+                        val_loss_l1 += criterion_l1(generated_images, real_images).item()
+                    if LAMBDA_PERCEPTUAL > 0:
+                        val_loss_perceptual += criterion_perceptual(generated_images, real_images).item()
+                    if LAMBDA_SSIM > 0:
+                        val_loss_ssim += criterion_ssim(generated_images, real_images).item()
+                    if LAMBDA_SOBEL > 0:
+                        val_loss_sobel += criterion_sobel(generated_images, real_images).item()
+                    if LAMBDA_CLIP > 0 and criterion_clip is not None:
+                        val_loss_clip += criterion_clip(generated_images, descriptions).item()
 
-        avg_val_loss_l1 = val_loss_l1 / len(val_loader) if val_loss_l1 > 0 else 0.0
-        avg_val_loss_perceptual = val_loss_perceptual / len(val_loader) if val_loss_perceptual > 0 else 0.0
-        avg_val_loss_ssim = val_loss_ssim / len(val_loader) if val_loss_ssim > 0 else 0.0
-        avg_val_loss_sobel = val_loss_sobel / len(val_loader) if val_loss_sobel > 0 else 0.0
-        avg_val_loss_clip = val_loss_clip / len(val_loader) if val_loss_clip > 0 else 0.0
+            avg_val_loss_l1 = val_loss_l1 / len(val_loader) if val_loss_l1 > 0 else 0.0
+            avg_val_loss_perceptual = val_loss_perceptual / len(val_loader) if val_loss_perceptual > 0 else 0.0
+            avg_val_loss_ssim = val_loss_ssim / len(val_loader) if val_loss_ssim > 0 else 0.0
+            avg_val_loss_sobel = val_loss_sobel / len(val_loader) if val_loss_sobel > 0 else 0.0
+            avg_val_loss_clip = val_loss_clip / len(val_loader) if val_loss_clip > 0 else 0.0
 
-        # Calcola la loss di validazione totale come somma pesata per il checkpointing
-        avg_val_loss = (LAMBDA_L1 * avg_val_loss_l1 +
-                        LAMBDA_PERCEPTUAL * avg_val_loss_perceptual +
-                        LAMBDA_SSIM * avg_val_loss_ssim +
-                        LAMBDA_SOBEL * avg_val_loss_sobel +
-                        LAMBDA_CLIP * avg_val_loss_clip)
+            # Calcola la loss di validazione totale come somma pesata per il checkpointing
+            avg_val_loss = (LAMBDA_L1 * avg_val_loss_l1 +
+                            LAMBDA_PERCEPTUAL * avg_val_loss_perceptual +
+                            LAMBDA_SSIM * avg_val_loss_ssim +
+                            LAMBDA_SOBEL * avg_val_loss_sobel +
+                            LAMBDA_CLIP * avg_val_loss_clip)
 
-        print(
-            f"Epoch {epoch}/{final_epoch} -> "
-            f"Train G_Loss: {avg_train_loss_g:.4f} (L1: {avg_train_loss_l1:.4f}, Perceptual: {avg_train_loss_perceptual:.4f}, SSIM: {avg_train_loss_ssim:.4f}, Sobel: {avg_train_loss_sobel:.4f}, CLIP: {avg_train_loss_clip:.4f}), "
-            f"Val Loss (L1: {avg_val_loss_l1:.4f}, Perceptual: {avg_val_loss_perceptual:.4f}, SSIM: {avg_val_loss_ssim:.4f}, Sobel: {avg_val_loss_sobel:.4f}, CLIP: {avg_val_loss_clip:.4f})"
-        )
+            print(
+                f"Epoch {epoch}/{final_epoch} -> "
+                f"Train G_Loss: {avg_train_loss_g:.4f} (L1: {avg_train_loss_l1:.4f}, Perceptual: {avg_train_loss_perceptual:.4f}, SSIM: {avg_train_loss_ssim:.4f}, Sobel: {avg_train_loss_sobel:.4f}, CLIP: {avg_train_loss_clip:.4f}), "
+                f"Val Loss (L1: {avg_val_loss_l1:.4f}, Perceptual: {avg_val_loss_perceptual:.4f}, SSIM: {avg_val_loss_ssim:.4f}, Sobel: {avg_val_loss_sobel:.4f}, CLIP: {avg_val_loss_clip:.4f})"
+            )
 
-        # --- Salvataggio Checkpoint ---
-        is_best = avg_val_loss < best_val_loss
-        if is_best:
-            best_val_loss = avg_val_loss
-        save_checkpoint(epoch, model_G, optimizer_G, avg_val_loss, is_best)
+            # --- Salvataggio Checkpoint ---
+            is_best = avg_val_loss < best_val_loss
+            if is_best:
+                best_val_loss = avg_val_loss
+            save_checkpoint(epoch, model_G, optimizer_G, avg_val_loss, is_best)
 
-        # --- Generazione Visualizzazioni ---
-        print(f"Epoch {epoch}: Generazione visualizzazioni...")
-        save_attention_visualization(epoch, model_G, tokenizer, fixed_train_attention_batch, DEVICE, 'train')
-        save_attention_visualization(epoch, model_G, tokenizer, fixed_val_attention_batch, DEVICE, 'val')
-        save_comparison_grid(epoch, model_G, fixed_train_batch, 'train', DEVICE)
-        save_comparison_grid(epoch, model_G, fixed_val_batch, 'val', DEVICE)
+            # --- Generazione Visualizzazioni ---
+            print(f"Epoch {epoch}: Generazione visualizzazioni...")
+            save_attention_visualization(epoch, model_G, tokenizer, fixed_train_attention_batch, DEVICE, 'train')
+            save_attention_visualization(epoch, model_G, tokenizer, fixed_val_attention_batch, DEVICE, 'val')
+            save_comparison_grid(epoch, model_G, fixed_train_batch, 'train', DEVICE)
+            save_comparison_grid(epoch, model_G, fixed_val_batch, 'val', DEVICE)
+        else:
+            # Stampa solo la loss di training per le epoche intermedie
+            print(
+                f"Epoch {epoch}/{final_epoch} -> "
+                f"Train G_Loss: {avg_train_loss_g:.4f} (L1: {avg_train_loss_l1:.4f}, Perceptual: {avg_train_loss_perceptual:.4f}, SSIM: {avg_train_loss_ssim:.4f}, Sobel: {avg_train_loss_sobel:.4f}, CLIP: {avg_train_loss_clip:.4f})"
+            )
 
     print("Training completato!")
 
@@ -559,5 +571,6 @@ if __name__ == "__main__":
         use_geometric_aug=True,
         use_color_aug=True,
         use_blur_aug=False,
-        use_cutout_aug=True
+        use_cutout_aug=True,
+        save_every_n_epochs=SAVE_EVERY_N_EPOCHS
     )
