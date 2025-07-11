@@ -35,6 +35,24 @@ class TextEncoder(nn.Module):
         return encoder_output
 
 
+class MappingNetwork(nn.Module):
+    """
+    An MLP that maps a noise vector z to an intermediate style vector w.
+    Inspired by StyleGAN.
+    """
+    def __init__(self, z_dim, w_dim, num_layers=8):
+        super().__init__()
+        layers = []
+        for i in range(num_layers):
+            in_dim = z_dim if i == 0 else w_dim
+            layers.append(nn.Linear(in_dim, w_dim))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, z):
+        return self.net(z)
+
+
 class ImageCrossAttention(nn.Module):
     """
     Modulo di Cross-Attention.
@@ -139,6 +157,11 @@ class ImageDecoder(nn.Module):
     def __init__(self, noise_dim, text_embed_dim, final_image_channels=3):
         super().__init__()
 
+        w_dim = 256 # Dimension of the intermediate style vector
+
+        # Mapping network per trasformare z in w
+        self.mapping_network = MappingNetwork(z_dim=noise_dim, w_dim=w_dim)
+
         # Meccanismo per calcolare il contesto iniziale come media pesata
         self.initial_context_attention = nn.Sequential(
             nn.Linear(in_features=text_embed_dim, out_features=512),
@@ -148,8 +171,8 @@ class ImageDecoder(nn.Module):
         )
 
         # Proiezione iniziale direttamente a 256 canali per l'attenzione.
-        # Input: (B, noise_dim + text_embed_dim) -> Output: (B, 256 * 4 * 4)
-        self.initial_projection = nn.Linear(noise_dim + text_embed_dim, 256 * 4 * 4)
+        # Input: (B, w_dim + text_embed_dim) -> Output: (B, 256 * 4 * 4)
+        self.initial_projection = nn.Linear(w_dim + text_embed_dim, 256 * 4 * 4)
 
         # Blocchi del decoder basati su GeneratorBlock
         self.blocks = nn.ModuleList([
@@ -183,17 +206,21 @@ class ImageDecoder(nn.Module):
         # context_vector.shape: (B, text_embed_dim)
         context_vector = torch.sum(attention_weights * encoder_output_full, dim=1)
 
-        # 2. Prepara il vettore di input iniziale per la proiezione
-        # initial_input.shape: (B, noise_dim + text_embed_dim)
-        initial_input = torch.cat([noise, context_vector], dim=1)
+        # 2. Mappa il rumore z al vettore di stile intermedio w
+        # w.shape: (B, w_dim)
+        w = self.mapping_network(noise)
 
-        # 3. Proietta e rimodella
+        # 3. Prepara il vettore di input iniziale per la proiezione
+        # initial_input.shape: (B, w_dim + text_embed_dim)
+        initial_input = torch.cat([w, context_vector], dim=1)
+
+        # 4. Proietta e rimodella
         # x.shape: (B, 256 * 4 * 4)
         x = self.initial_projection(initial_input)
         # x.shape: (B, 256, 4, 4)
         x = x.view(x.size(0), 256, 4, 4)
 
-        # 4. Passa attraverso i blocchi del decoder
+        # 5. Passa attraverso i blocchi del decoder
         attention_maps = []
         for block in self.blocks:
              encoder_ctx = encoder_output_full if block.use_attention else None
@@ -205,7 +232,7 @@ class ImageDecoder(nn.Module):
                 # attn_weights.shape: (B, H*W, seq_len)
                 attention_maps.append(attn_weights)
 
-        # 5. Layer finale
+        # 6. Layer finale
         # x.shape: (B, 3, 256, 256)
         x = self.final_conv(x)
         # x.shape: (B, 3, 256, 256)
