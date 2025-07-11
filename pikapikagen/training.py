@@ -30,7 +30,7 @@ NUM_WORKERS = 0
 # Numero di campioni da visualizzare nelle griglie di confronto
 NUM_VIZ_SAMPLES = 4
 # Frequenza di salvataggio checkpoint e visualizzazioni
-SAVE_EVERY_N_EPOCHS = 5
+SAVE_EVERY_N_EPOCHS = 1
 # Seed per la riproducibilità
 RANDOM_SEED = 42
 # Pesi per le diverse loss ausiliarie del generatore
@@ -436,15 +436,16 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = 100, 
             context_vector = torch.sum(attention_weights * encoder_output, dim=1)
 
             # --- Predizioni su immagini reali ---
-            real_images.requires_grad = True
             real_images_aug = augment_pipe(real_images)
+            # R1 regularization requires grads on the discriminator's input
+            real_images_aug.requires_grad = True
             d_real_pred = model_D(real_images_aug, context_vector.detach())
             
             # Calcolo loss per immagini reali (non-saturating logistic loss)
             loss_d_real = F.softplus(-d_real_pred).mean()
             
             # Calcolo regolarizzazione R1
-            grad_real = torch.autograd.grad(outputs=d_real_pred.sum(), inputs=real_images, create_graph=True)[0]
+            grad_real = torch.autograd.grad(outputs=d_real_pred.sum(), inputs=real_images_aug, create_graph=True)[0]
             grad_penalty = (grad_real.view(grad_real.shape[0], -1).norm(2, dim=1) ** 2).mean()
             loss_d_r1 = R1_GAMMA / 2 * grad_penalty
 
