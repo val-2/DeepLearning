@@ -156,6 +156,7 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device, set_nam
         print(f"Epoch {epoch}: Nessun token valido da visualizzare per '{description}'. Salto.")
         return
 
+    token_indices_to_display = [t['index'] for t in display_tokens]
     img_tensor_cpu = denormalize_image(generated_image.squeeze(0).cpu()).permute(1, 2, 0)
     num_decoder_layers = len(decoder_attention_maps)
     num_tokens = len(display_tokens)
@@ -201,9 +202,12 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device, set_nam
         layer_title = f"Decoder Cross-Attention Layer {i+1} (Size: {map_side}x{map_side})"
         layer_attn_map_squeezed = layer_attn_map.squeeze(0).cpu()
 
+        # Seleziona solo le mappe di attenzione per i token che visualizziamo
+        relevant_attn_maps = layer_attn_map_squeezed[:, token_indices_to_display]
+
         # Trova i valori min/max per questo strato per la colorbar
-        vmin = layer_attn_map_squeezed.min()
-        vmax = layer_attn_map_squeezed.max()
+        vmin = relevant_attn_maps.min()
+        vmax = relevant_attn_maps.max()
 
         # Crea una subgrid per questo strato (con una colonna in più per la colorbar)
         gs_layer = gs_main[2 + i].subgridspec(rows_per_layer, cols + 1, wspace=0.2, hspace=0.4, width_ratios=[*([1] * cols), 0.1])
