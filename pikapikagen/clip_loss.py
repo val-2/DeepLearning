@@ -1,4 +1,5 @@
 from sentence_transformers import SentenceTransformer
+from sentence_transformers.models import CLIPModel
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -87,39 +88,23 @@ class CLIPLoss(nn.Module):
 
     def encode_images(self, images: torch.Tensor) -> torch.Tensor:
         """
-        Encode images using the CLIP model.
+        Encode images using the CLIP model's vision transformer directly to preserve the computation graph.
 
         Args:
             images: Tensor of shape [B, C, H, W]
 
         Returns:
-            Image embeddings of shape [B, embedding_dim]
+            Image embeddings of shape [B, embedding_dim] with gradients attached.
         """
-        # Preprocess images
+        # Preprocess images for the CLIP model
         processed_images = self.preprocess_images(images)
 
-        # Convert to PIL Images for SentenceTransformer
-        pil_images = []
-        for img in processed_images:
-            # Denormalize for PIL conversion
-            img_denorm = img * torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1).to(img.device) + \
-                        torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).to(img.device)
-            img_denorm = torch.clamp(img_denorm, 0, 1)
-
-            # Convert to numpy and then PIL
-            img_np = img_denorm.detach().cpu().numpy().transpose(1, 2, 0)
-            img_np = (img_np * 255).astype(np.uint8)
-            pil_img = Image.fromarray(img_np)
-            pil_images.append(pil_img)
-
-        # Encode images
-        with torch.no_grad():
-            image_embeddings = self.model.encode(
-                pil_images,
-                convert_to_tensor=True,
-                device=self.device,
-                show_progress_bar=False
-            )
+        # Access the underlying HuggingFace CLIP model from the SentenceTransformer wrapper.
+        # self.model is the SentenceTransformer, self.model[0] is the CLIPModel module,
+        # and self.model[0].model is the actual HuggingFace transformers.CLIPModel.
+        # This allows us to call the vision encoder directly and keep the computation graph.
+        clip_module: CLIPModel = self.model[0] # type: ignore
+        image_embeddings = clip_module.model.get_image_features(pixel_values=processed_images) # type: ignore
 
         return image_embeddings
 
