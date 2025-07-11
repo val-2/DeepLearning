@@ -22,7 +22,7 @@ class TextEncoder(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=256, nhead=4, dim_feedforward=1024, batch_first=True
         )
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=4)
 
     def forward(self, token_ids):
         # 1. Ottieni gli embedding dai token ID
@@ -107,48 +107,74 @@ class ImageDecoder(nn.Module):
     def __init__(self, noise_dim, text_embed_dim, final_image_channels=3):
         super().__init__()
 
+        # Meccanismo per calcolare il contesto iniziale come media pesata
+        self.initial_context_attention = nn.Sequential(
+            nn.Linear(in_features=text_embed_dim, out_features=512),
+            nn.Tanh(),
+            nn.Linear(in_features=512, out_features=1),
+            nn.Softmax(dim=1)
+        )
+
         # Proiezione iniziale direttamente a 256 canali per l'attenzione.
+        # Input: (B, noise_dim + text_embed_dim) -> Output: (B, 256 * 4 * 4)
         self.initial_projection = nn.Linear(noise_dim + text_embed_dim, 256 * 4 * 4)
 
         # Blocchi del decoder U-Net style, con attenzione fin dall'inizio.
         self.blocks = nn.ModuleList([
-            # 4x4 -> 8x8
+            # Input: (B, 256, 4, 4)   -> Output: (B, 256, 8, 8)
             DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
-            # 8x8 -> 16x16
+            # Input: (B, 256, 8, 8)   -> Output: (B, 256, 16, 16)
             DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
-            # 16x16 -> 32x32
+            # Input: (B, 256, 16, 16)  -> Output: (B, 256, 32, 32)
             DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
-            # 32x32 -> 64x64
+            # Input: (B, 256, 32, 32)  -> Output: (B, 128, 64, 64)
             DecoderBlock(in_channels=256, out_channels=128, use_attention=True),
-            # 64x64 -> 128x128 (Da qui l'attenzione non è più possibile)
+            # Input: (B, 128, 64, 64)  -> Output: (B, 64, 128, 128)
             DecoderBlock(in_channels=128, out_channels=64, use_attention=False),
-            # 128x128 -> 256x256
+            # Input: (B, 64, 128, 128) -> Output: (B, 32, 256, 256)
             DecoderBlock(in_channels=64, out_channels=32, use_attention=False),
         ])
 
         # Layer finale per portare ai canali RGB
+        # Input: (B, 32, 256, 256) -> Output: (B, 3, 256, 256)
         self.final_conv = nn.Conv2d(32, final_image_channels, kernel_size=3, padding=1)
         self.final_activation = nn.Tanh()
 
-    def forward(self, noise, context_vector, encoder_output_full):
-        # 1. Prepara il vettore di input iniziale
+    def forward(self, noise, encoder_output_full):
+        # noise.shape: (B, noise_dim)
+        # encoder_output_full.shape: (B, seq_len, text_embed_dim)
+
+        # 1. Calcola il vettore di contesto iniziale con una media pesata (ATTENZIONE #1)
+        # attention_weights.shape: (B, seq_len, 1)
+        attention_weights = self.initial_context_attention(encoder_output_full)
+        # context_vector.shape: (B, text_embed_dim)
+        context_vector = torch.sum(attention_weights * encoder_output_full, dim=1)
+
+        # 2. Prepara il vettore di input iniziale per la proiezione
+        # initial_input.shape: (B, noise_dim + text_embed_dim)
         initial_input = torch.cat([noise, context_vector], dim=1)
 
-        # 2. Proietta e rimodella
+        # 3. Proietta e rimodella
+        # x.shape: (B, 256 * 4 * 4)
         x = self.initial_projection(initial_input)
+        # x.shape: (B, 256, 4, 4)
         x = x.view(x.size(0), 256, 4, 4)
 
-        # 3. Passa attraverso i blocchi del decoder
+        # 4. Passa attraverso i blocchi del decoder
         attention_maps = []
         for block in self.blocks:
              encoder_ctx = encoder_output_full if block.use_attention else None
+             # La shape di x viene upsamplata in ogni blocco (es. 4x4 -> 8x8)
              x, attn_weights = block(x, encoder_ctx)
 
              if attn_weights is not None:
+                # attn_weights.shape: (B, H*W, seq_len)
                 attention_maps.append(attn_weights)
 
-        # 4. Layer finale
+        # 5. Layer finale
+        # x.shape: (B, 3, 256, 256)
         x = self.final_conv(x)
+        # x.shape: (B, 3, 256, 256)
         x = self.final_activation(x)
         return x, attention_maps
 
@@ -166,15 +192,6 @@ class PikaPikaGen(nn.Module):
 
         text_embed_dim = 256
 
-        # Nuovo meccanismo di attenzione per calcolare il contesto iniziale
-        # come media pesata (weighted average) degli output dell'encoder.
-        self.initial_context_attention = nn.Sequential(
-            nn.Linear(in_features=text_embed_dim, out_features=128),
-            nn.Tanh(),
-            nn.Linear(in_features=128, out_features=1),
-            nn.Softmax(dim=1)
-        )
-
         self.image_decoder = ImageDecoder(
             noise_dim=noise_dim,
             text_embed_dim=text_embed_dim
@@ -183,24 +200,21 @@ class PikaPikaGen(nn.Module):
         self.noise_dim = noise_dim
 
     def forward(self, token_ids, return_attentions=False):
+        # token_ids.shape: (batch_size, seq_len)
         # Genera rumore casuale per il batch
         batch_size = token_ids.size(0)
+        # noise.shape: (batch_size, noise_dim)
         noise = torch.randn(batch_size, self.noise_dim, device=token_ids.device)
 
         # 1. Codifica il testo per ottenere i vettori di ogni parola
+        # encoder_output.shape: (batch_size, seq_len, text_embed_dim)
         encoder_output = self.text_encoder(token_ids)
 
-        # 2. Calcola il vettore di contesto iniziale con una media pesata (ATTENZIONE #1)
-        # 2.1 Calcola i pesi (scores) per ogni parola nella sequenza
-        attention_weights = self.initial_context_attention(encoder_output)
-
-        # 2.2 Calcola il contesto come somma pesata degli output dell'encoder
-        # Shapes: (B, SeqLen, 1) * (B, SeqLen, EmbDim) -> sum(dim=1) -> (B, EmbDim)
-        context_vector = torch.sum(attention_weights * encoder_output, dim=1)
-
-        # 3. Genera l'immagine usando il contesto iniziale e l'output completo dell'encoder
-        #    per l'attenzione interna del decoder (ATTENZIONE #2)
-        generated_image, attention_maps = self.image_decoder(noise, context_vector, encoder_output)
+        # 2. Genera l'immagine usando l'output completo dell'encoder
+        #    Il decoder calcolerà internamente sia il contesto iniziale (ATTENZIONE #1)
+        #    sia l'attenzione per-step (ATTENZIONE #2)
+        # generated_image.shape: (batch_size, 3, 256, 256)
+        generated_image, attention_maps = self.image_decoder(noise, encoder_output)
 
         if return_attentions:
             return generated_image, attention_maps

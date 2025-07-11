@@ -1,4 +1,3 @@
-import torch
 from model import PikaPikaGen
 
 def analyze_model_parameters(model):

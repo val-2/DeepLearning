@@ -8,10 +8,8 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
 import glob
-# Aggiungo questo per evitare problemi con la GUI di matplotlib su server senza display
 import matplotlib
 matplotlib.use('Agg')
-from torchvision import transforms
 
 from pokemon_dataset import PokemonDataset
 from model import PikaPikaGen
@@ -279,7 +277,7 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_E
         epochs_to_run (int): Il numero di epoche per cui eseguire l'addestramento.
         use_multi_gpu (bool): Se True, abilita l'uso di DataParallel se sono disponibili più GPU.
     """
-    if all(l <= 0 for l in [LAMBDA_L1, LAMBDA_PERCEPTUAL, LAMBDA_SSIM, LAMBDA_SOBEL, LAMBDA_CLIP]):
+    if all(loss <= 0 for loss in [LAMBDA_L1, LAMBDA_PERCEPTUAL, LAMBDA_SSIM, LAMBDA_SOBEL, LAMBDA_CLIP]):
         raise ValueError(
             "Tutti i pesi (lambda) delle loss sono a zero o negativi. "
             "Almeno una loss deve essere abilitata con un peso positivo per l'addestramento."
