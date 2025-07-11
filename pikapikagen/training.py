@@ -30,7 +30,7 @@ NUM_WORKERS = 0
 # Numero di campioni da visualizzare nelle griglie di confronto
 NUM_VIZ_SAMPLES = 4
 # Frequenza di salvataggio checkpoint e visualizzazioni
-SAVE_EVERY_N_EPOCHS = 1
+CHECKPOINT_EVERY_N_EPOCHS = 10
 # Seed per la riproducibilità
 RANDOM_SEED = 42
 # Pesi per le diverse loss ausiliarie del generatore
@@ -299,7 +299,7 @@ def save_comparison_grid(epoch, model, batch, set_name, device):
     plt.close(fig)
 
 
-def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = 100, use_multi_gpu: bool = True, save_every_n_epochs: int = SAVE_EVERY_N_EPOCHS):
+def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = 100, use_multi_gpu: bool = True):
     """
     Funzione principale per l'addestramento e la validazione del modello PikaPikaGen.
     """
@@ -515,39 +515,43 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = 100, 
             })
 
         # --- Fine Epoch: Validazione e Visualizzazione ---
-        # La validazione in una GAN è meno diretta, ci basiamo sulla G_loss e visivamente
-        if epoch % save_every_n_epochs == 0 or epoch == final_epoch:
-            model_G.eval()
-            model_D.eval()
-            
-            avg_val_g_loss = 0
-            with torch.no_grad():
-                for batch in val_loader:
-                    token_ids = batch['text'].to(DEVICE)
-                    attention_mask = batch['attention_mask'].to(DEVICE)
-                    real_images = batch['image'].to(DEVICE)
-                    
-                    generated_images = model_G(token_ids, attention_mask)
-                    
-                    loss_l1 = criterion_l1(generated_images, real_images) if LAMBDA_L1 > 0 else 0
-                    avg_val_g_loss += loss_l1
-            
-            avg_val_g_loss /= len(val_loader)
+        # La validazione e la visualizzazione ora vengono eseguite ad ogni epoca.
+        # Il salvataggio del checkpoint avviene a una frequenza diversa.
+        model_G.eval()
+        model_D.eval()
+        
+        avg_val_g_loss = 0
+        with torch.no_grad():
+            for batch in val_loader:
+                token_ids = batch['text'].to(DEVICE)
+                attention_mask = batch['attention_mask'].to(DEVICE)
+                real_images = batch['image'].to(DEVICE)
+                
+                model_to_use_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
+                generated_images = model_to_use_G(token_ids, attention_mask)
+                
+                loss_l1 = criterion_l1(generated_images, real_images) if LAMBDA_L1 > 0 else torch.tensor(0.0, device=DEVICE)
+                avg_val_g_loss += loss_l1.item()
+        
+        avg_val_g_loss /= len(val_loader)
 
-            print(f"Epoch {epoch}/{final_epoch} -> Val G_Loss (L1): {avg_val_g_loss:.4f}")
-            
-            # --- Salvataggio Checkpoint ---
+        print(f"Epoch {epoch}/{final_epoch} -> Val G_Loss (L1): {avg_val_g_loss:.4f}")
+
+        # --- Generazione Visualizzazioni (ogni epoca) ---
+        print(f"Epoch {epoch}: Generazione visualizzazioni...")
+        save_attention_visualization(epoch, model_G, tokenizer, fixed_train_attention_batch, DEVICE, 'train')
+        save_attention_visualization(epoch, model_G, tokenizer, fixed_val_attention_batch, DEVICE, 'val')
+        save_comparison_grid(epoch, model_G, fixed_train_batch, 'train', DEVICE)
+        save_comparison_grid(epoch, model_G, fixed_val_batch, 'val', DEVICE)
+        
+        # --- Salvataggio Checkpoint (ogni N epoche) ---
+        if epoch % CHECKPOINT_EVERY_N_EPOCHS == 0 or epoch == final_epoch:
             is_best = avg_val_g_loss < best_val_loss
             if is_best:
                 best_val_loss = avg_val_g_loss
+            print(f"Epoch {epoch}: Salvataggio checkpoint...")
             save_checkpoint(epoch, model_G, optimizer_G, model_D, optimizer_D, avg_val_g_loss, is_best)
 
-            # --- Generazione Visualizzazioni ---
-            print(f"Epoch {epoch}: Generazione visualizzazioni...")
-            save_attention_visualization(epoch, model_G, tokenizer, fixed_train_attention_batch, DEVICE, 'train')
-            save_attention_visualization(epoch, model_G, tokenizer, fixed_val_attention_batch, DEVICE, 'val')
-            save_comparison_grid(epoch, model_G, fixed_train_batch, 'train', DEVICE)
-            save_comparison_grid(epoch, model_G, fixed_val_batch, 'val', DEVICE)
 
     print("Training completato!")
 
@@ -557,5 +561,4 @@ if __name__ == "__main__":
         continue_from_last_checkpoint=False,
         epochs_to_run=200,
         use_multi_gpu=True,
-        save_every_n_epochs=5
     )
