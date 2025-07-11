@@ -171,8 +171,8 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device, set_nam
     fig_width = max(20, 2.5 * cols)
 
     fig = plt.figure(figsize=(fig_width, fig_height))
-    gs_main = fig.add_gridspec(num_main_rows, 1, height_ratios=height_ratios, hspace=0.6)
-    fig.suptitle(f"Epoch {epoch}: Attention Visualization for Pokémon #{pokemon_id} ({set_name.capitalize()})", fontsize=24, y=0.99)
+    gs_main = fig.add_gridspec(num_main_rows, 1, height_ratios=height_ratios, hspace=1.2)
+    fig.suptitle(f"Epoch {epoch}: Attention Visualization for Pokémon #{pokemon_id} ({set_name.capitalize()})", fontsize=24)
 
     # --- 1. Immagine Generata e Prompt ---
     ax_main_img = fig.add_subplot(gs_main[0])
@@ -199,9 +199,15 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device, set_nam
         map_size_flat = layer_attn_map.shape[1]
         map_side = int(np.sqrt(map_size_flat))
         layer_title = f"Decoder Cross-Attention Layer {i+1} (Size: {map_side}x{map_side})"
+        layer_attn_map_squeezed = layer_attn_map.squeeze(0).cpu()
 
-        # Crea una subgrid per questo strato
-        gs_layer = gs_main[2 + i].subgridspec(rows_per_layer, cols, wspace=0.1, hspace=0.4)
+        # Trova i valori min/max per questo strato per la colorbar
+        vmin = layer_attn_map_squeezed.min()
+        vmax = layer_attn_map_squeezed.max()
+
+        # Crea una subgrid per questo strato (con una colonna in più per la colorbar)
+        gs_layer = gs_main[2 + i].subgridspec(rows_per_layer, cols + 1, wspace=0.2, hspace=0.4, width_ratios=[*([1] * cols), 0.1])
+
 
         # Crea tutti gli assi per la griglia
         axes_in_layer = [fig.add_subplot(gs_layer[r, c]) for r in range(rows_per_layer) for c in range(cols)]
@@ -209,24 +215,29 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device, set_nam
         # Usa la posizione del primo asse per il titolo
         if axes_in_layer:
             y_pos = axes_in_layer[0].get_position().y1
-            fig.text(0.5, y_pos, layer_title, ha='center', va='bottom', fontsize=16, weight='bold')
+            fig.text(0.5, y_pos + 0.01, layer_title, ha='center', va='bottom', fontsize=16, weight='bold')
 
-        layer_attn_map_squeezed = layer_attn_map.squeeze(0).cpu()
 
         for j, token_info in enumerate(display_tokens):
             ax = axes_in_layer[j]
             attn_for_token = layer_attn_map_squeezed[:, token_info['index']]
             heatmap = attn_for_token.reshape(map_side, map_side)
-            ax.imshow(heatmap, cmap='jet', interpolation='bilinear')
+            im = ax.imshow(heatmap, cmap='jet', interpolation='nearest', vmin=vmin, vmax=vmax)
             ax.set_title(f"'{token_info['token']}'", fontsize=12)
             ax.axis('off')
+
+        # Aggiungi la colorbar
+        cax = fig.add_subplot(gs_layer[:, -1])
+        cbar = fig.colorbar(im, cax=cax)
+        cbar.ax.tick_params(labelsize=10)
+        cbar.set_label('Attention Weight', rotation=270, labelpad=15, fontsize=12)
 
         # Pulisce gli assi non usati nella griglia
         for j in range(num_tokens, len(axes_in_layer)):
             axes_in_layer[j].axis('off')
 
 
-    plt.tight_layout(rect=(0, 0.03, 1, 0.97))
+    plt.tight_layout(rect=(0, 0.03, 1, 0.96))
     save_path = os.path.join(IMAGE_DIR, f"{epoch:03d}_{set_name}_attention_visualization.png")
     plt.savefig(save_path, bbox_inches='tight')
     plt.close(fig)
