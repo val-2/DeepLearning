@@ -37,6 +37,11 @@ LAMBDA_SSIM = 0
 LAMBDA_SOBEL = 0.0
 LAMBDA_CLIP = 0.0
 
+USE_GEOMETRIC_AUG = True
+USE_COLOR_AUG = True
+USE_BLUR_AUG = False
+USE_CUTOUT_AUG = False
+
 
 # --- Setup del Dispositivo ---
 if torch.cuda.is_available():
@@ -295,7 +300,7 @@ def save_comparison_grid(epoch, model, batch, set_name, device):
     plt.close(fig)
 
 
-def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_EPOCHS, use_multi_gpu: bool = True, use_geometric_aug: bool = True, use_color_aug: bool = True, use_blur_aug: bool = False, use_cutout_aug: bool = True, save_every_n_epochs: int = SAVE_EVERY_N_EPOCHS):
+def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = NUM_EPOCHS, use_multi_gpu: bool = True, use_geometric_aug: bool = USE_GEOMETRIC_AUG, use_color_aug: bool = USE_COLOR_AUG, use_blur_aug: bool = USE_BLUR_AUG, use_cutout_aug: bool = USE_CUTOUT_AUG, save_every_n_epochs: int = SAVE_EVERY_N_EPOCHS):
     """
     Funzione principale per l'addestramento e la validazione del modello PikaPikaGen.
 
@@ -568,9 +573,4 @@ if __name__ == "__main__":
         continue_from_last_checkpoint=True,
         epochs_to_run=100,
         use_multi_gpu=True,
-        use_geometric_aug=True,
-        use_color_aug=True,
-        use_blur_aug=False,
-        use_cutout_aug=True,
-        save_every_n_epochs=SAVE_EVERY_N_EPOCHS
     )
