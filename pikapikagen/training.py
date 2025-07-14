@@ -9,8 +9,6 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
 import glob
-import matplotlib
-matplotlib.use('Agg')
 
 from pokemon_dataset import PokemonDataset
 from model import PikaPikaGen
