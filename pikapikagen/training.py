@@ -115,7 +115,7 @@ def denormalize_image(tensor):
     tensor = (tensor + 1) / 2
     return tensor.clamp(0, 1)
 
-def save_attention_visualization(epoch, model, tokenizer, batch, device, set_name):
+def save_attention_visualization(epoch, model, tokenizer, batch, device, set_name, show_inline=False):
     """
     Genera e salva una visualizzazione dell'attenzione multi-livello in stile griglia.
 
@@ -244,6 +244,8 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device, set_nam
     plt.tight_layout(rect=(0, 0.03, 1, 0.96))
     save_path = os.path.join(IMAGE_DIR, f"{epoch:03d}_{set_name}_attention_visualization.png")
     plt.savefig(save_path, bbox_inches='tight')
+    if show_inline:
+        plt.show()
     plt.close(fig)
 
 
@@ -291,11 +293,12 @@ def save_comparison_grid(epoch, model, batch, set_name, device, show_inline=Fals
 
     plt.tight_layout(rect=(0, 0, 1, 0.95))
 
+    # Salva sempre l'immagine
+    save_path = os.path.join(output_dir, f"{epoch:03d}_{set_name}_comparison.png")
+    plt.savefig(save_path)
+
     if show_inline:
         plt.show()
-    else:
-        save_path = os.path.join(output_dir, f"{epoch:03d}_{set_name}_comparison.png")
-        plt.savefig(save_path)
 
     plt.close(fig)
 
@@ -553,9 +556,8 @@ def fit(continue_from_last_checkpoint: bool = True, epochs_to_run: int = 100, us
 
         # --- Generazione Visualizzazioni (ogni epoca) ---
         print(f"Epoch {epoch}: Generazione visualizzazioni...")
-        if not show_images_inline:
-             save_attention_visualization(epoch, model_G, tokenizer, fixed_train_attention_batch, DEVICE, 'train')
-             save_attention_visualization(epoch, model_G, tokenizer, fixed_val_attention_batch, DEVICE, 'val')
+        save_attention_visualization(epoch, model_G, tokenizer, fixed_train_attention_batch, DEVICE, 'train', show_inline=show_images_inline)
+        save_attention_visualization(epoch, model_G, tokenizer, fixed_val_attention_batch, DEVICE, 'val', show_inline=show_images_inline)
 
         # Mostra o salva le griglie di confronto
         save_comparison_grid(epoch, model_G, fixed_train_batch, 'train', DEVICE, show_inline=show_images_inline)
@@ -584,4 +586,5 @@ if __name__ == "__main__":
         continue_from_last_checkpoint=False,
         epochs_to_run=200,
         use_multi_gpu=True,
+        show_images_inline=True
     )
