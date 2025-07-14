@@ -554,8 +554,9 @@ def fit(continue_from_last_checkpoint: bool = True, epochs_to_run: int = 100, us
 
         # --- Generazione Visualizzazioni (ogni epoca) ---
         print(f"Epoch {epoch}: Generazione visualizzazioni...")
-        save_attention_visualization(epoch, model_G, tokenizer, fixed_train_attention_batch, DEVICE, 'train', show_inline=show_images_inline)
-        save_attention_visualization(epoch, model_G, tokenizer, fixed_val_attention_batch, DEVICE, 'val', show_inline=show_images_inline)
+        # L'attenzione viene solo salvata su file, non mostrata inline
+        save_attention_visualization(epoch, model_G, tokenizer, fixed_train_attention_batch, DEVICE, 'train', show_inline=False)
+        save_attention_visualization(epoch, model_G, tokenizer, fixed_val_attention_batch, DEVICE, 'val', show_inline=False)
 
         # Mostra o salva le griglie di confronto
         save_comparison_grid(epoch, model_G, fixed_train_batch, 'train', DEVICE, show_inline=show_images_inline)
