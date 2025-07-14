@@ -18,7 +18,7 @@ from clip_loss import create_clip_loss
 
 # --- Parametri di Training Fissi ---
 MODEL_NAME = "prajjwal1/bert-mini"
-BATCH_SIZE = 8  # Ridotto per il maggior consumo di memoria della GAN
+BATCH_SIZE = 32
 LEARNING_RATE_G = 2e-4
 LEARNING_RATE_D = 2e-4
 NOISE_DIM = 100
