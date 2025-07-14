@@ -126,8 +126,10 @@ def train_discriminator(model_G, model_D, optimizer_D, batch, device, augment_pi
         fake_images = model_to_use_G.image_decoder(
             noise, encoder_output, attention_mask
         )[0]
+        # Applico l'augmentation QUI, dentro no_grad, per rompere
+        # ogni possibile collegamento con il grafo del generatore.
+        fake_images_aug = augment_pipe(fake_images)
 
-    fake_images_aug = augment_pipe(fake_images)
     d_fake_pred = model_D(fake_images_aug, context_vector)
     loss_d_fake = F.softplus(d_fake_pred).mean()
 
