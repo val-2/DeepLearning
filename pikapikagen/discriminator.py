@@ -1,125 +1,60 @@
 import torch
 import torch.nn as nn
-import numpy as np
-
-# A building block for the discriminator, inspired by StyleGAN2.
-# It includes residual connections and downsampling.
-class DiscriminatorBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.residual = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
-        self.shortcut = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
-        self.downsampler = nn.AvgPool2d(2)
-
-    def forward(self, x):
-        shortcut = self.downsampler(self.shortcut(x))
-        residual = self.residual(x)
-        residual = self.downsampler(residual)
-        
-        # Add residual connection
-        x = (shortcut + residual) / np.sqrt(2)
-        
-        return x
-
-# Adds a feature map representing the standard deviation across the minibatch.
-# This helps prevent mode collapse by encouraging variety.
-class MinibatchStdDev(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x):
-        # N, C, H, W
-        B, C, H, W = x.shape
-        # Calculate standard deviation over the batch dimension
-        # Keep dimensions for broadcasting, group over channels and spatial dims
-        std = torch.sqrt(torch.mean((x - torch.mean(x, dim=0, keepdim=True))**2, dim=0, keepdim=True))
-        # Calculate the mean of the standard deviation
-        mean_std = torch.mean(std)
-        # Create a new feature map with this value and concatenate it
-        std_feature = mean_std.expand(B, 1, H, W)
-        return torch.cat([x, std_feature], dim=1)
 
 class PikaPikaDisc(nn.Module):
-    """
-    Discriminator model for PikaPikaGen GAN.
-    It's a conditional discriminator inspired by StyleGAN2-ADA architecture.
-    It takes an image and text features, and outputs a single 'realness' score.
-    """
-    def __init__(self, text_embed_dim=256, image_size=256):
-        super().__init__()
+    def __init__(self, img_channels=3, features_d=64, text_embed_dim=256):
+        super(PikaPikaDisc, self).__init__()
 
-        # Channel configuration for each resolution block
-        channels = {
-            256: 32,
-            128: 64,
-            64: 128,
-            32: 256,
-            16: 512,
-            8: 512,
-            4: 512
-        }
-
-        # Input layer to convert RGB image to feature space
-        self.from_rgb = nn.Sequential(
-            nn.Conv2d(3, channels[image_size], kernel_size=1, bias=False),
-            nn.LeakyReLU(0.2, inplace=True)
+        # Parte della rete che processa l'immagine fino a una dimensione intermedia (es. 16x16)
+        self.image_path = nn.Sequential(
+            # Input: 3x256x256
+            self._block(in_channels=img_channels, out_channels=features_d, kernel_size=4, stride=2, padding=1, bn=False), # fdx128x128
+            self._block(in_channels=features_d, out_channels=features_d*2, kernel_size=4, stride=2, padding=1, bn=True), # 64x64
+            self._block(in_channels=features_d*2, out_channels=features_d*4, kernel_size=4, stride=2, padding=1, bn=True), # 32x32
+            self._block(in_channels=features_d*4, out_channels=features_d*8, kernel_size=4, stride=2, padding=1, bn=True), # 16x16
         )
 
-        # Main backbone of downsampling blocks
-        self.blocks = nn.ModuleList([
-            DiscriminatorBlock(channels[256], channels[128]),  # 256x256 -> 128x128
-            DiscriminatorBlock(channels[128], channels[64]),   # 128x128 -> 64x64
-            DiscriminatorBlock(channels[64], channels[32]),    # 64x64   -> 32x32
-            DiscriminatorBlock(channels[32], channels[16]),    # 32x32   -> 16x16
-        ])
-
-        # Text conditioning is projected and injected at the 16x16 resolution stage.
+        # Proiezione del vettore di contesto testuale per renderlo compatibile con le feature dell'immagine
         self.text_projection = nn.Sequential(
-            nn.Linear(text_embed_dim, channels[16]),
+            nn.Linear(in_features=text_embed_dim, out_features=features_d*8),
             nn.LeakyReLU(0.2, inplace=True)
         )
-        
-        # The block after text injection needs to handle the concatenated channels
-        self.conditional_block = DiscriminatorBlock(channels[16] * 2, channels[8]) # 16x16 -> 8x8
 
-        # Block after conditional block to get to 4x4
-        self.final_downsample = DiscriminatorBlock(channels[8], channels[4])
-
-        self.final_block = nn.Sequential(
-            MinibatchStdDev(),
-            # Input channels are from the final downsample output + 1 (for std dev)
-            nn.Conv2d(channels[4] + 1, channels[4], kernel_size=3, padding=1, bias=False),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Flatten(),
-            # The input features to the linear layer depend on the final feature map size (4x4)
-            nn.Linear(channels[4] * 4 * 4, 1)
+        # Parte finale della rete che processa le feature combinate
+        self.combined_path = nn.Sequential(
+            # Input combinato: (features_d*8 + features_d*8) x 16x16
+            self._block(in_channels=features_d*16, out_channels=features_d*16, kernel_size=4, stride=2, padding=1, bn=True), # 8x8
+            self._block(in_channels=features_d*16, out_channels=features_d*32, kernel_size=4, stride=2, padding=1, bn=True), # 4x4
+            nn.Conv2d(in_channels=features_d*32, out_channels=1, kernel_size=4, stride=1, padding=0) # 1x1
         )
 
-    def forward(self, image, text_features):
-        # image: (B, 3, 256, 256)
-        # text_features: (B, embed_dim) - this should be the global context vector
-        
-        x = self.from_rgb(image)
+    def _block(self, in_channels, out_channels, kernel_size, stride, padding, bn=True):
+        if bn:
+            return nn.Sequential(
+                nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride, padding=padding, bias=False),
+                nn.BatchNorm2d(num_features=out_channels),
+                nn.LeakyReLU(0.2, inplace=True)
+            )
+        return nn.Sequential(
+                nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride, padding=padding, bias=False),
+                nn.LeakyReLU(0.2, inplace=True)
+            )
 
-        for block in self.blocks:
-            x = block(x) # x is now 16x16
+    def forward(self, x, context_vector):
+        # 1. Processa l'immagine per estrarre le feature iniziali
+        # -> (B, features_d*8, 16, 16)
+        img_features = self.image_path(x)
 
-        # Project text features and inject them
-        projected_text = self.text_projection(text_features)
-        # expand text features to match spatial dimensions
-        projected_text = projected_text.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, x.shape[2], x.shape[3])
-        
-        # Concatenate along channel dimension
-        x = torch.cat([x, projected_text], dim=1)
-        
-        # Pass through the rest of the network
-        x = self.conditional_block(x) # 8x8
-        x = self.final_downsample(x)  # 4x4
-        x = self.final_block(x) # final score
+        # 2. Proietta il contesto testuale e lo espande alle dimensioni spaziali dell'immagine
+        # -> (B, features_d*8)
+        text_features = self.text_projection(context_vector)
+        # -> (B, features_d*8, 1, 1) -> (B, features_d*8, 16, 16)
+        text_features_expanded = text_features.unsqueeze(-1).unsqueeze(-1).expand_as(img_features)
 
-        return x 
+        # 3. Concatena le feature dell'immagine e del testo
+        # -> (B, features_d*16, 16, 16)
+        combined_features = torch.cat([img_features, text_features_expanded], dim=1)
+
+        # 4. Processa le feature combinate per ottenere il punteggio finale
+        output = self.combined_path(combined_features)
+        return output

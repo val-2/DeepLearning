@@ -15,7 +15,6 @@ matplotlib.use('Agg')
 from pokemon_dataset import PokemonDataset
 from model import PikaPikaGen
 from discriminator import PikaPikaDisc
-from augment import AugmentPipe
 from losses import VGGPerceptualLoss, SSIMLoss, SobelLoss
 from clip_loss import create_clip_loss
 
@@ -39,12 +38,7 @@ LAMBDA_PERCEPTUAL = 0
 LAMBDA_SSIM = 0.0
 LAMBDA_SOBEL = 1.0
 LAMBDA_CLIP = 0.0
-# Parametri per la loss del discriminatore
-R1_GAMMA = 10.0 # Peso per la regolarizzazione R1
-# Parametri per ADA
-ADA_TARGET = 0.6 # Target sign per l'overfitting del discriminatore
-ADA_INTERVAL = 4 # Ogni quanti step aggiornare p
-ADA_SPEED = 500 # Velocità di aggiornamento di p
+# Parametri per ADA e R1 rimossi
 
 
 # --- Setup del Dispositivo ---
@@ -253,9 +247,9 @@ def save_attention_visualization(epoch, model, tokenizer, batch, device, set_nam
     plt.close(fig)
 
 
-def save_comparison_grid(epoch, model, batch, set_name, device):
+def save_comparison_grid(epoch, model, batch, set_name, device, show_inline=False, output_dir=IMAGE_DIR):
     """
-    Genera e salva una griglia di confronto orizzontale (reale vs. generato).
+    Genera e salva/mostra una griglia di confronto orizzontale (reale vs. generato).
 
     Args:
         epoch (int): L'epoca corrente.
@@ -263,6 +257,8 @@ def save_comparison_grid(epoch, model, batch, set_name, device):
         batch (dict): Un batch di dati (training o validazione).
         set_name (str): 'train' o 'val', per il titolo e nome del file.
         device (torch.device): Il dispositivo su cui eseguire i calcoli.
+        show_inline (bool): Se True, mostra il plot direttamente (per notebook).
+        output_dir (str): La directory dove salvare l'immagine.
     """
     model.eval()
     token_ids = batch['text'].to(device)
@@ -294,12 +290,105 @@ def save_comparison_grid(epoch, model, batch, set_name, device):
     axs[1, 0].text(-0.1, 0.5, "Generated", ha="center", va="center", rotation="vertical", fontsize=14, transform=axs[1, 0].transAxes)
 
     plt.tight_layout(rect=(0, 0, 1, 0.95))
-    save_path = os.path.join(IMAGE_DIR, f"{epoch:03d}_{set_name}_comparison.png")
-    plt.savefig(save_path)
+
+    if show_inline:
+        plt.show()
+    else:
+        save_path = os.path.join(output_dir, f"{epoch:03d}_{set_name}_comparison.png")
+        plt.savefig(save_path)
+
     plt.close(fig)
 
 
-def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = 100, use_multi_gpu: bool = True):
+def plot_losses(losses_g, losses_d):
+    """
+    Genera un plot delle loss del generatore e del discriminatore.
+    """
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(losses_g, label='Generator Loss', color='blue')
+    ax.plot(losses_d, label='Discriminator Loss', color='red')
+    ax.set_title('Training Losses')
+    ax.set_xlabel('Epochs')
+    ax.set_ylabel('Loss')
+    ax.legend()
+    ax.grid(True)
+    plt.show()
+
+
+def train_discriminator(model_G, model_D, optimizer_D, batch, device):
+    """Esegue un passo di training per il discriminatore."""
+    optimizer_D.zero_grad()
+
+    token_ids = batch['text'].to(device)
+    attention_mask = batch['attention_mask'].to(device)
+    real_images = batch['image'].to(device)
+
+    # Il testo viene processato una sola volta con il text_encoder del generatore.
+    # Non calcoliamo i gradienti rispetto al generatore in questa fase.
+    with torch.no_grad():
+        model_to_use_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
+        encoder_output = model_to_use_G.text_encoder(token_ids)
+        attention_weights = model_to_use_G.image_decoder.initial_context_attention(encoder_output)
+        context_vector = torch.sum(attention_weights * encoder_output, dim=1)
+
+    # --- Predizioni su immagini reali ---
+    d_real_pred = model_D(real_images, context_vector)
+    loss_d_real = F.softplus(-d_real_pred).mean()
+
+    # --- Predizioni su immagini generate ---
+    with torch.no_grad():
+        noise = torch.randn(real_images.size(0), NOISE_DIM, device=device)
+        fake_images = model_to_use_G.image_decoder(noise, encoder_output, attention_mask)[0]
+
+    d_fake_pred = model_D(fake_images, context_vector)
+    loss_d_fake = F.softplus(d_fake_pred).mean()
+
+    # Loss totale del discriminatore
+    loss_D = loss_d_real + loss_d_fake
+    loss_D.backward()
+    optimizer_D.step()
+
+    return loss_D.item()
+
+
+def train_generator(model_G, model_D, optimizer_G, batch, criterions, device):
+    """Esegue un passo di training per il generatore."""
+    optimizer_G.zero_grad()
+
+    token_ids = batch['text'].to(device)
+    attention_mask = batch['attention_mask'].to(device)
+    real_images = batch['image'].to(device)
+
+    # Dobbiamo ricalcolare l'output dell'encoder per far fluire i gradienti
+    # attraverso il generatore e il text encoder.
+    model_to_use_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
+    encoder_output_g = model_to_use_G.text_encoder(token_ids)
+    attention_weights_g = model_to_use_G.image_decoder.initial_context_attention(encoder_output_g)
+    context_vector_g = torch.sum(attention_weights_g * encoder_output_g, dim=1)
+
+    noise = torch.randn(real_images.size(0), NOISE_DIM, device=device)
+    generated_images, _, _ = model_to_use_G.image_decoder(noise, encoder_output_g, attention_mask)
+    g_pred = model_D(generated_images, context_vector_g)
+
+    # Loss GAN per il generatore
+    loss_g_gan = F.softplus(-g_pred).mean()
+
+    # Loss ausiliarie (pixel-wise)
+    loss_l1 = criterions['l1'](generated_images, real_images) if LAMBDA_L1 > 0 else torch.tensor(0.0, device=device)
+    loss_perceptual = criterions['perceptual'](generated_images, real_images) if LAMBDA_PERCEPTUAL > 0 else torch.tensor(0.0, device=device)
+    loss_ssim = criterions['ssim'](generated_images, real_images) if LAMBDA_SSIM > 0 else torch.tensor(0.0, device=device)
+    loss_sobel = criterions['sobel'](generated_images, real_images) if LAMBDA_SOBEL > 0 else torch.tensor(0.0, device=device)
+    loss_clip = criterions['clip'](generated_images, batch['description']) if criterions['clip'] is not None else torch.tensor(0.0, device=device)
+
+    # Loss totale del generatore
+    loss_G = loss_g_gan + LAMBDA_L1 * loss_l1 + LAMBDA_PERCEPTUAL * loss_perceptual + LAMBDA_SSIM * loss_ssim + LAMBDA_SOBEL * loss_sobel + LAMBDA_CLIP * loss_clip
+    loss_G.backward()
+    optimizer_G.step()
+
+    return loss_G.item()
+
+
+def fit(continue_from_last_checkpoint: bool = True, epochs_to_run: int = 100, use_multi_gpu: bool = True, show_images_inline: bool = False):
     """
     Funzione principale per l'addestramento e la validazione del modello PikaPikaGen.
     """
@@ -347,13 +436,8 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = 100, 
 
     # --- Inizializzazione Modelli, Ottimizzatori e Augment Pipe ---
     model_G = PikaPikaGen(text_encoder_model_name=MODEL_NAME, noise_dim=NOISE_DIM).to(DEVICE)
-    model_D = PikaPikaDisc(text_embed_dim=256).to(DEVICE)
-    # L'AugmentPipe ora gestisce tutte le aumentazioni, controllate da ADA
-    augment_pipe = AugmentPipe(
-        p=0.0,
-        xflip=1, rotate=1, scale=1, translate=1, cutout=1, # Geometric
-        brightness=1, contrast=1, saturation=1, # Color
-    ).to(DEVICE)
+    model_D = PikaPikaDisc().to(DEVICE)
+    # L'AugmentPipe è stata rimossa perché non usiamo più ADA
 
     # --- Supporto Multi-GPU ---
     if use_multi_gpu and torch.cuda.device_count() > 1:
@@ -367,17 +451,21 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = 100, 
     optimizer_D = optim.Adam(model_D.parameters(), lr=LEARNING_RATE_D, betas=(0.0, 0.99))
 
     # Loss ausiliarie per il generatore
-    criterion_l1 = nn.L1Loss().to(DEVICE)
-    criterion_perceptual = VGGPerceptualLoss(device=DEVICE).to(DEVICE)
-    criterion_ssim = SSIMLoss().to(DEVICE)
-    criterion_sobel = SobelLoss().to(DEVICE)
-    criterion_clip = create_clip_loss(device=str(DEVICE)) if LAMBDA_CLIP > 0 else None
+    criterions = {
+        'l1': nn.L1Loss().to(DEVICE),
+        'perceptual': VGGPerceptualLoss(device=DEVICE).to(DEVICE),
+        'ssim': SSIMLoss().to(DEVICE),
+        'sobel': SobelLoss().to(DEVICE),
+        'clip': create_clip_loss(device=str(DEVICE)) if LAMBDA_CLIP > 0 else None
+    }
 
     start_epoch = 1
     best_val_loss = float('inf')
-    ada_p = 0.0 # Probabilità iniziale di aumentazione
-    augment_pipe.p = ada_p
-    r_t_stats = [] # Statistiche per l'overfitting del discriminatore (real target)
+
+    # Liste per salvare le loss di ogni epoca
+    losses_G_hist = []
+    losses_D_hist = []
+
 
     # --- Logica per continuare il training ---
     if continue_from_last_checkpoint:
@@ -388,7 +476,7 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = 100, 
             print(f"--- Ripresa del training dal checkpoint: {os.path.basename(checkpoint_path)} ---")
             try:
                 checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
-                
+
                 model_to_load_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
                 model_to_load_G.load_state_dict(checkpoint['model_G_state_dict'])
                 optimizer_G.load_state_dict(checkpoint['optimizer_G_state_dict'])
@@ -404,7 +492,7 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = 100, 
             except Exception as e:
                 print(f"Errore nel caricamento del checkpoint {os.path.basename(checkpoint_path)}: {e}")
                 print("Il file potrebbe essere corrotto o incompatibile. Inizio un nuovo training da zero.")
-        
+
         if not checkpoint_loaded:
             print("--- Nessun checkpoint valido trovato. Inizio un nuovo training da zero. ---")
     else:
@@ -418,132 +506,62 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = 100, 
         model_G.train()
         model_D.train()
 
+        epoch_losses_g = []
+        epoch_losses_d = []
+
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{final_epoch} [Training]")
         for i, batch in enumerate(pbar):
-            token_ids = batch['text'].to(DEVICE)
-            attention_mask = batch['attention_mask'].to(DEVICE)
-            real_images = batch['image'].to(DEVICE)
-            
+
             # --- Fase 1: Training del Discriminatore ---
-            optimizer_D.zero_grad()
-            
-            # --- Preparazione dati e calcolo text features ---
-            # Il testo viene processato una sola volta e usato per G e D
-            # Usiamo il text_encoder del generatore.
-            model_to_use_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
-            encoder_output = model_to_use_G.text_encoder(token_ids)
-            attention_weights = model_to_use_G.image_decoder.initial_context_attention(encoder_output)
-            context_vector = torch.sum(attention_weights * encoder_output, dim=1)
-
-            # --- Predizioni su immagini reali ---
-            real_images_aug = augment_pipe(real_images)
-            # R1 regularization requires grads on the discriminator's input
-            real_images_aug.requires_grad = True
-            d_real_pred = model_D(real_images_aug, context_vector.detach())
-            
-            # Calcolo loss per immagini reali (non-saturating logistic loss)
-            loss_d_real = F.softplus(-d_real_pred).mean()
-            
-            # Calcolo regolarizzazione R1
-            grad_real = torch.autograd.grad(outputs=d_real_pred.sum(), inputs=real_images_aug, create_graph=True)[0]
-            grad_penalty = (grad_real.view(grad_real.shape[0], -1).norm(2, dim=1) ** 2).mean()
-            loss_d_r1 = R1_GAMMA / 2 * grad_penalty
-
-            # Statistiche per ADA
-            r_t_stats.append(d_real_pred.sign().mean().item())
-
-            # --- Predizioni su immagini generate ---
-            with torch.no_grad():
-                noise = torch.randn(real_images.size(0), NOISE_DIM, device=DEVICE)
-                fake_images = model_to_use_G.image_decoder(noise, encoder_output, attention_mask)[0]
-            
-            fake_images_aug = augment_pipe(fake_images)
-            d_fake_pred = model_D(fake_images_aug, context_vector.detach())
-            loss_d_fake = F.softplus(d_fake_pred).mean()
-
-            # Loss totale del discriminatore
-            loss_D = loss_d_real + loss_d_fake + loss_d_r1
-            loss_D.backward()
-            optimizer_D.step()
+            loss_D = train_discriminator(model_G, model_D, optimizer_D, batch, DEVICE)
 
             # --- Fase 2: Training del Generatore ---
-            optimizer_G.zero_grad()
+            loss_G = train_generator(model_G, model_D, optimizer_G, batch, criterions, DEVICE)
 
-            noise = torch.randn(real_images.size(0), NOISE_DIM, device=DEVICE)
-            # Dobbiamo ricalcolare l'output dell'encoder per far fluire i gradienti
-            encoder_output_g = model_to_use_G.text_encoder(token_ids)
-            attention_weights_g = model_to_use_G.image_decoder.initial_context_attention(encoder_output_g)
-            context_vector_g = torch.sum(attention_weights_g * encoder_output_g, dim=1)
-
-            generated_images, _, _ = model_to_use_G.image_decoder(noise, encoder_output_g, attention_mask)
-            generated_images_aug = augment_pipe(generated_images)
-            g_pred = model_D(generated_images_aug, context_vector_g)
-
-            # Loss GAN per il generatore
-            loss_g_gan = F.softplus(-g_pred).mean()
-
-            # Loss ausiliarie (pixel-wise)
-            loss_l1 = criterion_l1(generated_images, real_images) if LAMBDA_L1 > 0 else torch.tensor(0.0, device=DEVICE)
-            loss_perceptual = criterion_perceptual(generated_images, real_images) if LAMBDA_PERCEPTUAL > 0 else torch.tensor(0.0, device=DEVICE)
-            loss_ssim = criterion_ssim(generated_images, real_images) if LAMBDA_SSIM > 0 else torch.tensor(0.0, device=DEVICE)
-            loss_sobel = criterion_sobel(generated_images, real_images) if LAMBDA_SOBEL > 0 else torch.tensor(0.0, device=DEVICE)
-            loss_clip = criterion_clip(generated_images, batch['description']) if criterion_clip is not None else torch.tensor(0.0, device=DEVICE)
-            
-            # Loss totale del generatore
-            loss_G = loss_g_gan + LAMBDA_L1 * loss_l1 + LAMBDA_PERCEPTUAL * loss_perceptual + LAMBDA_SSIM * loss_ssim + LAMBDA_SOBEL * loss_sobel + LAMBDA_CLIP * loss_clip
-            loss_G.backward()
-            optimizer_G.step()
-            
-            # --- Aggiornamento ADA ---
-            if (i + 1) % ADA_INTERVAL == 0:
-                if len(r_t_stats) > 0:
-                    sign_mean = np.mean(r_t_stats)
-                    # Heuristic to adjust p
-                    if sign_mean > ADA_TARGET:
-                        ada_p += ADA_INTERVAL / (len(train_dataset) / BATCH_SIZE * epochs_to_run) * ADA_SPEED
-                    else:
-                        ada_p -= ADA_INTERVAL / (len(train_dataset) / BATCH_SIZE * epochs_to_run) * ADA_SPEED
-                    ada_p = np.clip(ada_p, 0.0, 1.0)
-                    augment_pipe.p = ada_p
-                    r_t_stats = []
+            epoch_losses_d.append(loss_D)
+            epoch_losses_g.append(loss_G)
 
             pbar.set_postfix({
-                'D_loss': f"{loss_D.item():.3f}",
-                'G_loss': f"{loss_G.item():.3f}",
-                'R1': f"{loss_d_r1.item():.3f}",
-                'p_ADA': f"{ada_p:.3f}"
+                'D_loss': f"{loss_D:.3f}",
+                'G_loss': f"{loss_G:.3f}",
             })
 
+        # Salva la media delle loss per l'epoca corrente
+        losses_D_hist.append(np.mean(epoch_losses_d))
+        losses_G_hist.append(np.mean(epoch_losses_g))
+
         # --- Fine Epoch: Validazione e Visualizzazione ---
-        # La validazione e la visualizzazione ora vengono eseguite ad ogni epoca.
-        # Il salvataggio del checkpoint avviene a una frequenza diversa.
         model_G.eval()
         model_D.eval()
-        
+
         avg_val_g_loss = 0
         with torch.no_grad():
             for batch in val_loader:
                 token_ids = batch['text'].to(DEVICE)
                 attention_mask = batch['attention_mask'].to(DEVICE)
                 real_images = batch['image'].to(DEVICE)
-                
+
                 model_to_use_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
                 generated_images = model_to_use_G(token_ids, attention_mask)
-                
-                loss_l1 = criterion_l1(generated_images, real_images) if LAMBDA_L1 > 0 else torch.tensor(0.0, device=DEVICE)
+
+                loss_l1 = criterions['l1'](generated_images, real_images) if LAMBDA_L1 > 0 else torch.tensor(0.0, device=DEVICE)
                 avg_val_g_loss += loss_l1.item()
-        
+
         avg_val_g_loss /= len(val_loader)
 
         print(f"Epoch {epoch}/{final_epoch} -> Val G_Loss (L1): {avg_val_g_loss:.4f}")
 
         # --- Generazione Visualizzazioni (ogni epoca) ---
         print(f"Epoch {epoch}: Generazione visualizzazioni...")
-        save_attention_visualization(epoch, model_G, tokenizer, fixed_train_attention_batch, DEVICE, 'train')
-        save_attention_visualization(epoch, model_G, tokenizer, fixed_val_attention_batch, DEVICE, 'val')
-        save_comparison_grid(epoch, model_G, fixed_train_batch, 'train', DEVICE)
-        save_comparison_grid(epoch, model_G, fixed_val_batch, 'val', DEVICE)
-        
+        if not show_images_inline:
+             save_attention_visualization(epoch, model_G, tokenizer, fixed_train_attention_batch, DEVICE, 'train')
+             save_attention_visualization(epoch, model_G, tokenizer, fixed_val_attention_batch, DEVICE, 'val')
+
+        # Mostra o salva le griglie di confronto
+        save_comparison_grid(epoch, model_G, fixed_train_batch, 'train', DEVICE, show_inline=show_images_inline)
+        save_comparison_grid(epoch, model_G, fixed_val_batch, 'val', DEVICE, show_inline=show_images_inline)
+
+
         # --- Salvataggio Checkpoint (ogni N epoche) ---
         if epoch % CHECKPOINT_EVERY_N_EPOCHS == 0 or epoch == final_epoch:
             is_best = avg_val_g_loss < best_val_loss
@@ -555,9 +573,14 @@ def train(continue_from_last_checkpoint: bool = True, epochs_to_run: int = 100, 
 
     print("Training completato!")
 
+    # Plotta le loss alla fine del training
+    plot_losses(losses_G_hist, losses_D_hist)
+
+    return losses_G_hist, losses_D_hist
+
 
 if __name__ == "__main__":
-    train(
+    fit(
         continue_from_last_checkpoint=False,
         epochs_to_run=200,
         use_multi_gpu=True,
