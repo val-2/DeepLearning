@@ -835,8 +835,8 @@ def fit(
 
 if __name__ == "__main__":
     fit(
-        continue_from_last_checkpoint=False,
-        epochs_to_run=200,
+        continue_from_last_checkpoint=True,
+        epochs_to_run=100,
         use_multi_gpu=True,
         show_images_inline=True,
     )
