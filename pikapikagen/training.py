@@ -27,8 +27,8 @@ from utils import (
 # --- Parametri di Training Fissi ---
 MODEL_NAME = "prajjwal1/bert-mini"
 BATCH_SIZE = 32
-LEARNING_RATE_G = 2e-4
-LEARNING_RATE_D = 2e-4
+LEARNING_RATE_G = 1e-4  # Più lento per il generatore (TTUR)
+LEARNING_RATE_D = 2e-4  # Più veloce per il discriminatore (TTUR)
 NOISE_DIM = 100
 TRAIN_VAL_SPLIT = 0.9
 NUM_WORKERS = 0
@@ -39,7 +39,7 @@ CHECKPOINT_EVERY_N_EPOCHS = 5
 # Seed per la riproducibilità
 RANDOM_SEED = 42
 # Pesi per le diverse loss ausiliarie del generatore
-LAMBDA_L1 = 0.0
+LAMBDA_L1 = 0.1  # RE-INTRODOTTO un valore piccolo come ancora
 LAMBDA_PERCEPTUAL = 0.0
 LAMBDA_SSIM = 0.0
 LAMBDA_SOBEL = 0.0
@@ -203,6 +203,9 @@ def train_generator(model_G, model_D, optimizer_G, batch, criterions, device):
     )
     loss_G.backward()
 
+    # Clipping per la stabilità generale
+    torch.nn.utils.clip_grad_norm_(model_G.parameters(), 1.0)
+
     optimizer_G.step()
 
     # Dizionario delle loss per il logging
@@ -312,9 +315,10 @@ def fit(
     )
     model_D = PikaPikaDisc().to(DEVICE)
     # Crea l'istanza della nostra pipeline di augmentation
-    # p=0.6 significa che il 60% dei batch sarà aumentato.
-    augment_pipe = AugmentPipe(p=0.0).to(DEVICE)
+    # p ridotto per stabilizzare le fasi iniziali del training
+    augment_pipe = AugmentPipe(p=0.2).to(DEVICE)
 
+    # --- Supporto Multi-GPU ---
     if use_multi_gpu and torch.cuda.device_count() > 1:
         print(f"Utilizzo di {torch.cuda.device_count()} GPU con nn.DataParallel.")
         model_G = nn.DataParallel(model_G)
@@ -325,10 +329,10 @@ def fit(
         )
 
     optimizer_G = optim.Adam(
-        model_G.parameters(), lr=LEARNING_RATE_G, betas=(0.0, 0.99)
+        model_G.parameters(), lr=LEARNING_RATE_G, betas=(0.5, 0.99)
     )
     optimizer_D = optim.Adam(
-        model_D.parameters(), lr=LEARNING_RATE_D, betas=(0.0, 0.99)
+        model_D.parameters(), lr=LEARNING_RATE_D, betas=(0.5, 0.99)
     )
 
     # Loss ausiliarie per il generatore
