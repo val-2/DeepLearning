@@ -202,6 +202,11 @@ def train_generator(model_G, model_D, optimizer_G, batch, criterions, device):
         + LAMBDA_CLIP * loss_clip
     )
     loss_G.backward()
+
+    # "Cappa" la norma dei gradienti a 1.0. Questo previene l'esplosione.
+    # Se i gradienti sono troppo grandi, vengono riscalati verso il basso.
+    torch.nn.utils.clip_grad_norm_(model_G.parameters(), 1.0)
+
     optimizer_G.step()
 
     # Dizionario delle loss per il logging
