@@ -203,10 +203,6 @@ def train_generator(model_G, model_D, optimizer_G, batch, criterions, device):
     )
     loss_G.backward()
 
-    # "Cappa" la norma dei gradienti a 1.0. Questo previene l'esplosione.
-    # Se i gradienti sono troppo grandi, vengono riscalati verso il basso.
-    torch.nn.utils.clip_grad_norm_(model_G.parameters(), 1.0)
-
     optimizer_G.step()
 
     # Dizionario delle loss per il logging
@@ -317,9 +313,8 @@ def fit(
     model_D = PikaPikaDisc().to(DEVICE)
     # Crea l'istanza della nostra pipeline di augmentation
     # p=0.6 significa che il 60% dei batch sarà aumentato.
-    augment_pipe = AugmentPipe(p=0.6).to(DEVICE)
+    augment_pipe = AugmentPipe(p=0.0).to(DEVICE)
 
-    # --- Supporto Multi-GPU ---
     if use_multi_gpu and torch.cuda.device_count() > 1:
         print(f"Utilizzo di {torch.cuda.device_count()} GPU con nn.DataParallel.")
         model_G = nn.DataParallel(model_G)
