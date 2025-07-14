@@ -31,10 +31,10 @@ CHECKPOINT_EVERY_N_EPOCHS = 5
 # Seed per la riproducibilità
 RANDOM_SEED = 42
 # Pesi per le diverse loss ausiliarie del generatore
-LAMBDA_L1 = 0.5
-LAMBDA_PERCEPTUAL = 0
+LAMBDA_L1 = 0.0
+LAMBDA_PERCEPTUAL = 0.0
 LAMBDA_SSIM = 0.0
-LAMBDA_SOBEL = 1.0
+LAMBDA_SOBEL = 0.0
 LAMBDA_CLIP = 0.0
 LAMBDA_ADV = 1.0
 # Parametri per ADA e R1 rimossi
@@ -88,10 +88,19 @@ def find_sorted_checkpoints(checkpoint_dir):
 
 
 def save_checkpoint(
-    epoch, model_G, optimizer_G, model_D, optimizer_D, loss, is_best=False
+    epoch,
+    model_G,
+    optimizer_G,
+    model_D,
+    optimizer_D,
+    best_val_loss,
+    current_val_losses,
+    losses_G_hist,
+    losses_D_hist,
+    is_best=False,
 ):
     """
-    Salva un checkpoint del modello, dell'ottimizzatore e della loss.
+    Salva un checkpoint del modello, degli ottimizzatori e delle loss.
     """
     state = {
         "epoch": epoch,
@@ -103,7 +112,10 @@ def save_checkpoint(
         if isinstance(model_D, nn.DataParallel)
         else model_D.state_dict(),
         "optimizer_D_state_dict": optimizer_D.state_dict(),
-        "loss": loss,
+        "best_val_loss": best_val_loss,
+        "current_val_losses": current_val_losses,
+        "losses_G_hist": losses_G_hist,
+        "losses_D_hist": losses_D_hist,
     }
     filename = os.path.join(CHECKPOINT_DIR, f"checkpoint_epoch_{epoch:03d}.pth.tar")
     torch.save(state, filename)
@@ -676,7 +688,9 @@ def fit(
                 optimizer_D.load_state_dict(checkpoint["optimizer_D_state_dict"])
 
                 start_epoch = checkpoint["epoch"] + 1
-                best_val_loss = checkpoint.get("loss", float("inf"))
+                best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+                losses_G_hist = checkpoint.get("losses_G_hist", [])
+                losses_D_hist = checkpoint.get("losses_D_hist", [])
                 print(f"Checkpoint caricato. Si riparte dall'epoca {start_epoch}.")
                 checkpoint_loaded = True
             except Exception as e:
@@ -822,7 +836,18 @@ def fit(
             if is_best:
                 best_val_loss = avg_val_g_loss
             print(f"Epoch {epoch}: Salvataggio checkpoint...")
-            save_checkpoint(epoch, model_G, optimizer_G, model_D, optimizer_D, avg_val_g_loss, is_best)
+            save_checkpoint(
+                epoch,
+                model_G,
+                optimizer_G,
+                model_D,
+                optimizer_D,
+                best_val_loss,
+                avg_val_losses,
+                losses_G_hist,
+                losses_D_hist,
+                is_best,
+            )
 
 
     print("Training completato!")
