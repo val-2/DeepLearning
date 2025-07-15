@@ -88,7 +88,9 @@ class GeometricAugmentPipe:
         return images
 
 
-def train_discriminator(model_G, model_D, optimizer_D, batch, device, augment_pipe):
+def train_discriminator(
+    model_G, model_D, optimizer_D, batch, device, augment_pipe, criterion_gan
+):
     """Esegue un passo di training per il discriminatore."""
     optimizer_D.zero_grad()
 
@@ -111,7 +113,8 @@ def train_discriminator(model_G, model_D, optimizer_D, batch, device, augment_pi
     # --- Predizioni su immagini reali ---
     real_images_aug = augment_pipe(real_images)
     d_real_pred = model_D(real_images_aug, context_vector)
-    loss_d_real = F.softplus(-d_real_pred).mean()
+    real_labels = torch.ones_like(d_real_pred, device=device)
+    loss_d_real = criterion_gan(d_real_pred, real_labels)
 
     # --- Predizioni su immagini generate ---
     with torch.no_grad():
@@ -124,7 +127,8 @@ def train_discriminator(model_G, model_D, optimizer_D, batch, device, augment_pi
         fake_images_aug = augment_pipe(fake_images)
 
     d_fake_pred = model_D(fake_images_aug, context_vector)
-    loss_d_fake = F.softplus(d_fake_pred).mean()
+    fake_labels = torch.zeros_like(d_fake_pred, device=device)
+    loss_d_fake = criterion_gan(d_fake_pred, fake_labels)
 
     # Loss totale del discriminatore
     loss_D = loss_d_real + loss_d_fake
@@ -158,7 +162,8 @@ def train_generator(model_G, model_D, optimizer_G, batch, criterions, device):
     g_pred = model_D(generated_images, context_vector_g)
 
     # Loss GAN per il generatore
-    loss_g_gan = F.softplus(-g_pred).mean()
+    real_labels = torch.ones_like(g_pred, device=device)
+    loss_g_gan = criterions["gan"](g_pred, real_labels)
 
     # Loss ausiliarie (pixel-wise)
     loss_l1 = (
@@ -331,6 +336,7 @@ def fit(
 
     # Loss ausiliarie per il generatore
     criterions = {
+        "gan": nn.BCELoss().to(DEVICE),
         "l1": nn.L1Loss().to(DEVICE),
         "perceptual": VGGPerceptualLoss(device=DEVICE).to(DEVICE),
         "ssim": SSIMLoss().to(DEVICE),
@@ -395,7 +401,13 @@ def fit(
         for i, batch in enumerate(pbar):
             # --- Fase 1: Training del Discriminatore ---
             loss_D = train_discriminator(
-                model_G, model_D, optimizer_D, batch, DEVICE, augment_pipe
+                model_G,
+                model_D,
+                optimizer_D,
+                batch,
+                DEVICE,
+                augment_pipe,
+                criterions["gan"],
             )
 
             # --- Fase 2: Training del Generatore ---
@@ -445,7 +457,8 @@ def fit(
 
                 # Calcolo di tutte le loss del generatore
                 g_pred = model_D(generated_images, context_vector_g)
-                loss_g_gan = F.softplus(-g_pred).mean()
+                real_labels = torch.ones_like(g_pred, device=DEVICE)
+                loss_g_gan = criterions["gan"](g_pred, real_labels)
                 loss_l1 = criterions["l1"](generated_images, real_images)
                 loss_perceptual = criterions["perceptual"](
                     generated_images, real_images
