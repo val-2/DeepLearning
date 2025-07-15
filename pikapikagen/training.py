@@ -14,11 +14,11 @@ from pokemon_dataset import PokemonDataset
 from model import PikaPikaGen
 from discriminator import PikaPikaDisc
 from losses import VGGPerceptualLoss, SSIMLoss, SobelLoss
-from clip_loss import create_clip_loss
+from clip_loss import CLIPLoss
 from augment import GeometricAugmentPipe
 from utils import (
     save_plot_losses,
-    find_sorted_checkpoints,  # Sostituito load_latest_checkpoint
+    find_sorted_checkpoints,
     CHECKPOINT_DIR,
     OUTPUT_DIR,
     save_attention_visualization,
@@ -40,12 +40,12 @@ CHECKPOINT_EVERY_N_EPOCHS = 5
 # Seed per la riproducibilità
 RANDOM_SEED = 42
 # Pesi per loss - simplified for basic GAN training
-LAMBDA_L1 = 0.2
+LAMBDA_L1 = 1.0
 LAMBDA_PERCEPTUAL = 0.0
 LAMBDA_SSIM = 0.0
 LAMBDA_SOBEL = 0.0
 LAMBDA_CLIP = 0.0
-LAMBDA_ADV = 1.0
+LAMBDA_ADV = 0.0
 
 
 # --- Setup del Dispositivo ---
@@ -174,15 +174,14 @@ def _initialize_optimizers(model_G, model_D):
 
 
 def _initialize_criterions():
-    """Inizializza le funzioni di loss."""
-    criterion_gan = nn.BCEWithLogitsLoss()
+    """Inizializza le funzioni di loss solo quando necessarie."""
     criterions = {
-        "gan": criterion_gan,
-        "l1": nn.L1Loss(),
-        "perceptual": VGGPerceptualLoss(device=DEVICE).to(DEVICE),
-        "ssim": SSIMLoss(size_average=True),
-        "sobel": SobelLoss(),
-        "clip": create_clip_loss(device=str(DEVICE)) if LAMBDA_CLIP > 0 else None
+        "gan": nn.BCEWithLogitsLoss() if LAMBDA_ADV > 0 else None,
+        "l1": nn.L1Loss() if LAMBDA_L1 > 0 else None,
+        "perceptual": VGGPerceptualLoss(device=DEVICE).to(DEVICE) if LAMBDA_PERCEPTUAL > 0 else None,
+        "ssim": SSIMLoss(size_average=True) if LAMBDA_SSIM > 0 else None,
+        "sobel": SobelLoss() if LAMBDA_SOBEL > 0 else None,
+        "clip": CLIPLoss(device=str(DEVICE)) if LAMBDA_CLIP > 0 else None
     }
     return criterions
 
@@ -201,11 +200,8 @@ def _load_checkpoint(model_G, model_D, optimizer_G, optimizer_D):
         checkpoint = torch.load(latest_checkpoint_path, weights_only=False)
 
         # Caricamento degli stati per i modelli e gli ottimizzatori
-        model_to_load_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
-        model_to_load_G.load_state_dict(checkpoint["generator_state_dict"])
-
-        model_to_load_D = model_D.module if isinstance(model_D, nn.DataParallel) else model_D
-        model_to_load_D.load_state_dict(checkpoint["discriminator_state_dict"])
+        model_G.load_state_dict(checkpoint["generator_state_dict"])
+        model_D.load_state_dict(checkpoint["discriminator_state_dict"])
 
         optimizer_G.load_state_dict(checkpoint["optimizer_G_state_dict"])
         optimizer_D.load_state_dict(checkpoint["optimizer_D_state_dict"])
@@ -224,38 +220,60 @@ def _load_checkpoint(model_G, model_D, optimizer_G, optimizer_D):
 def _train_one_epoch(epoch, model_G, model_D, train_loader, optimizer_D, optimizer_G, criterions, augment_pipe):
     """Esegue un'epoca di training."""
     model_G.train()
-    model_D.train()
-    train_epoch_losses = {"G_total": [], "D_loss": [], "D_real": [], "D_fake": []}
+    if LAMBDA_ADV > 0:
+        model_D.train()
+
+    # Inizializza tutte le loss possibili
+    train_epoch_losses = {
+        "G_total": [], "G_adv": [], "L1": [], "perceptual": [], "ssim": [], "sobel": [], "clip": [],
+        "D_loss": [], "D_real": [], "D_fake": []
+    }
 
     progress_bar = tqdm(
         train_loader, desc=f"Training Epoca {epoch}", leave=False, unit="batch"
     )
     for batch_idx, batch in enumerate(progress_bar):
 
-        # --- Training del Discriminatore ---
-        d_losses = train_discriminator(model_G, model_D, optimizer_D, batch, DEVICE, augment_pipe, criterions["gan"])
+        # --- Training del Discriminatore (solo se LAMBDA_ADV > 0) ---
+        if LAMBDA_ADV > 0 and criterions["gan"] is not None:
+            d_losses = train_discriminator(model_G, model_D, optimizer_D, batch, DEVICE, augment_pipe, criterions["gan"])
+        else:
+            # Se non c'è training adversariale, traccia loss nulle
+            d_losses = {
+                "D_loss": 0.0,
+                "D_real": 0.0,
+                "D_fake": 0.0,
+            }
+
         for key, value in d_losses.items():
-            if key not in train_epoch_losses:
-                train_epoch_losses[key] = []
             train_epoch_losses[key].append(value)
 
-        # --- Training del Generatore ---
+        # --- Training del Generatore (sempre) ---
         g_losses = train_generator(
             model_G, model_D, optimizer_G, batch, criterions, DEVICE
         )
 
         # Aggiorna le medie delle loss del generatore
         for key, value in g_losses.items():
-            if key not in train_epoch_losses:
-                train_epoch_losses[key] = []
             train_epoch_losses[key].append(value)
 
-        # Aggiorna la barra di progresso con le loss medie
-        mean_d_loss = np.mean(train_epoch_losses["D_loss"])
-        mean_g_loss = np.mean(train_epoch_losses["G_total"])
-        progress_bar.set_postfix(
-            {"Loss_D": f"{mean_d_loss:.4f}", "Loss_G": f"{mean_g_loss:.4f}"}
-        )
+        # Aggiorna la barra di progresso con le loss medie (solo loss attive)
+        active_losses = {}
+        if LAMBDA_ADV > 0:
+            active_losses["Loss_D"] = f"{np.mean(train_epoch_losses['D_loss']):.4f}"
+        active_losses["Loss_G"] = f"{np.mean(train_epoch_losses['G_total']):.4f}"
+        if LAMBDA_L1 > 0:
+            active_losses["L1"] = f"{np.mean(train_epoch_losses['L1']):.4f}"
+        if LAMBDA_PERCEPTUAL > 0:
+            active_losses["Perc"] = f"{np.mean(train_epoch_losses['perceptual']):.4f}"
+        if LAMBDA_SSIM > 0:
+            active_losses["SSIM"] = f"{np.mean(train_epoch_losses['ssim']):.4f}"
+        if LAMBDA_SOBEL > 0:
+            active_losses["Sobel"] = f"{np.mean(train_epoch_losses['sobel']):.4f}"
+        if LAMBDA_CLIP > 0:
+            active_losses["CLIP"] = f"{np.mean(train_epoch_losses['clip']):.4f}"
+
+        progress_bar.set_postfix(active_losses)
 
     # Calcolo delle loss medie per l'epoca di training
     avg_train_losses = {
@@ -279,17 +297,21 @@ def _validate_one_epoch(epoch, model_G, model_D, val_loader, criterions):
             real_images = batch["image"].to(DEVICE)
 
             # Calcolo della loss del generatore sul set di validazione
-            model_to_use_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
-            encoder_output_g = model_to_use_G.text_encoder(token_ids)
+            encoder_output_g = model_G.text_encoder(token_ids)
 
             noise = torch.randn(real_images.size(0), NOISE_DIM, device=DEVICE)
-            generated_images, _, _ = model_to_use_G.image_decoder(noise, encoder_output_g, attention_mask)
+            generated_images, _, _ = model_G.image_decoder(noise, encoder_output_g, attention_mask)
 
-            d_pred_val = model_D(generated_images)
-            real_labels = torch.ones_like(d_pred_val, device=DEVICE)
-            loss_g_gan_val = criterions["gan"](d_pred_val, real_labels)
+            # Loss adversariale solo se attiva
+            if LAMBDA_ADV > 0 and criterions["gan"] is not None:
+                d_pred_val = model_D(generated_images)
+                real_labels = torch.ones_like(d_pred_val, device=DEVICE)
+                loss_g_gan_val = criterions["gan"](d_pred_val, real_labels)
+            else:
+                loss_g_gan_val = torch.tensor(0.0, device=DEVICE)
 
-            # Aggiungi altre loss di validazione se necessario (es. L1)
+            # Per ora usiamo solo la loss adversariale per la validazione
+            # Si possono aggiungere altre loss ausiliarie qui se necessario
             loss_G_val = loss_g_gan_val
 
             val_epoch_losses["G_total_val"].append(loss_G_val.item())
@@ -321,10 +343,9 @@ def train_discriminator(model_G, model_D, optimizer_D, batch, device, augment_pi
 
     # --- 2. Score su immagini generate ---
     with torch.no_grad():
-        model_to_use_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
-        encoder_output = model_to_use_G.text_encoder(token_ids)
+        encoder_output = model_G.text_encoder(token_ids)
         noise = torch.randn(batch_size, NOISE_DIM, device=device)
-        fake_images = model_to_use_G.image_decoder(noise, encoder_output, attention_mask)[0]
+        fake_images = model_G.image_decoder(noise, encoder_output, attention_mask)[0]
         fake_images_aug = augment_pipe(fake_images)
 
     d_fake_pred = model_D(fake_images_aug)
@@ -351,45 +372,41 @@ def train_generator(model_G, model_D, optimizer_G, batch, criterions, device):
     attention_mask = batch["attention_mask"].to(device)
     real_images = batch["image"].to(device)
 
-    model_to_use_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
-    encoder_output_g = model_to_use_G.text_encoder(token_ids)
+    encoder_output_g = model_G.text_encoder(token_ids)
 
     noise = torch.randn(real_images.size(0), NOISE_DIM, device=device)
-    generated_images, _, _ = model_to_use_G.image_decoder(noise, encoder_output_g, attention_mask)
+    generated_images, _, _ = model_G.image_decoder(noise, encoder_output_g, attention_mask)
 
-    # Score del discriminatore sulle immagini generate (solo immagini, no testo)
-    d_pred_on_fake = model_D(generated_images)
+    # Loss adversariale - calcolata solo se lambda > 0
+    if LAMBDA_ADV > 0 and criterions["gan"] is not None:
+        d_pred_on_fake = model_D(generated_images)
+        real_labels = torch.ones_like(d_pred_on_fake, device=device)
+        loss_g_gan = criterions["gan"](d_pred_on_fake, real_labels)
+    else:
+        loss_g_gan = torch.tensor(0.0, device=device)
 
-    # La loss del generatore vuole che il discriminatore classifichi le immagini generate come reali (1)
-    real_labels = torch.ones_like(d_pred_on_fake, device=device)
-    loss_g_gan = criterions["gan"](d_pred_on_fake, real_labels)
-
-    # Loss ausiliarie (manteniamo come richiesto)
-    loss_l1 = criterions["l1"](generated_images, real_images) if LAMBDA_L1 > 0 else torch.tensor(0.0, device=device)
-    loss_perceptual = criterions["perceptual"](generated_images, real_images) if LAMBDA_PERCEPTUAL > 0 else torch.tensor(0.0, device=device)
-    loss_ssim = criterions["ssim"](generated_images, real_images) if LAMBDA_SSIM > 0 else torch.tensor(0.0, device=device)
-    loss_sobel = criterions["sobel"](generated_images, real_images) if LAMBDA_SOBEL > 0 else torch.tensor(0.0, device=device)
-    loss_clip = criterions["clip"](generated_images, batch["description"]) if criterions["clip"] is not None else torch.tensor(0.0, device=device)
+    # Loss ausiliarie - calcolate solo se lambda > 0
+    loss_l1 = criterions["l1"](generated_images, real_images) if LAMBDA_L1 > 0 and criterions["l1"] is not None else torch.tensor(0.0, device=device)
+    loss_perceptual = criterions["perceptual"](generated_images, real_images) if LAMBDA_PERCEPTUAL > 0 and criterions["perceptual"] is not None else torch.tensor(0.0, device=device)
+    loss_ssim = criterions["ssim"](generated_images, real_images) if LAMBDA_SSIM > 0 and criterions["ssim"] is not None else torch.tensor(0.0, device=device)
+    loss_sobel = criterions["sobel"](generated_images, real_images) if LAMBDA_SOBEL > 0 and criterions["sobel"] is not None else torch.tensor(0.0, device=device)
+    loss_clip = criterions["clip"](generated_images, batch["description"]) if LAMBDA_CLIP > 0 and criterions["clip"] is not None else torch.tensor(0.0, device=device)
 
     # Loss totale del generatore
     loss_G = loss_g_gan + LAMBDA_L1 * loss_l1 + LAMBDA_PERCEPTUAL * loss_perceptual + LAMBDA_SSIM * loss_ssim + LAMBDA_SOBEL * loss_sobel + LAMBDA_CLIP * loss_clip
     loss_G.backward()
     optimizer_G.step()
 
-    # Dizionario delle loss per il logging
-    individual_losses = {"G_total": loss_G.item()}
-    if LAMBDA_ADV > 0:
-        individual_losses["G_adv"] = loss_g_gan.item()
-    if LAMBDA_L1 > 0:
-        individual_losses["L1"] = loss_l1.item()
-    if LAMBDA_PERCEPTUAL > 0:
-        individual_losses["perceptual"] = loss_perceptual.item()
-    if LAMBDA_SSIM > 0:
-        individual_losses["ssim"] = loss_ssim.item()
-    if LAMBDA_SOBEL > 0:
-        individual_losses["sobel"] = loss_sobel.item()
-    if LAMBDA_CLIP > 0 and loss_clip is not None:
-        individual_losses["clip"] = loss_clip.item()
+    # Dizionario delle loss per il logging - sempre tutte le loss, anche se 0
+    individual_losses = {
+        "G_total": loss_G.item(),
+        "G_adv": loss_g_gan.item(),
+        "L1": loss_l1.item(),
+        "perceptual": loss_perceptual.item(),
+        "ssim": loss_ssim.item(),
+        "sobel": loss_sobel.item(),
+        "clip": loss_clip.item(),
+    }
 
     return individual_losses
 
@@ -397,7 +414,6 @@ def train_generator(model_G, model_D, optimizer_G, batch, criterions, device):
 def fit(
     continue_from_last_checkpoint: bool = True,
     epochs_to_run: int = 100,
-    use_multi_gpu: bool = True,
     show_images_inline: bool = False,
 ):
     """
@@ -420,13 +436,7 @@ def fit(
 
     augment_pipe = GeometricAugmentPipe(p=0.5)
 
-    # --- Gestione Multi-GPU ---
-    if use_multi_gpu and torch.cuda.device_count() > 1:
-        print(f"Utilizzo di {torch.cuda.device_count()} GPU per il training.")
-        model_G = nn.DataParallel(model_G)
-        model_D = nn.DataParallel(model_D)
-
-    start_epoch = 0
+    start_epoch = 1
     train_losses_history = []
     val_losses_history = []
     best_val_loss = float("inf")
@@ -448,14 +458,32 @@ def fit(
             epoch, model_G, model_D, train_loader, optimizer_D, optimizer_G, criterions, augment_pipe
         )
         train_losses_history.append(avg_train_losses)
-        avg_d_real = avg_train_losses.get('D_real', 0)
-        avg_d_fake = avg_train_losses.get('D_fake', 0)
-        print(
-            f"Fine Training Epoca {epoch} - "
-            f"Loss G: {avg_train_losses.get('G_total', 0):.4f}, "
-            f"Loss D: {avg_train_losses.get('D_loss', 0):.4f} "
-            f"(R: {avg_d_real:.4f}, F: {avg_d_fake:.4f})"
-        )
+
+        # Costruisce il messaggio di fine epoca mostrando solo le loss attive
+        epoch_msg = f"Fine Training Epoca {epoch} - Loss G: {avg_train_losses.get('G_total', 0):.4f}"
+
+        if LAMBDA_ADV > 0:
+            avg_d_real = avg_train_losses.get('D_real', 0)
+            avg_d_fake = avg_train_losses.get('D_fake', 0)
+            epoch_msg += f", Loss D: {avg_train_losses.get('D_loss', 0):.4f} (R: {avg_d_real:.4f}, F: {avg_d_fake:.4f})"
+
+        # Aggiungi loss ausiliarie se attive
+        aux_losses = []
+        if LAMBDA_L1 > 0:
+            aux_losses.append(f"L1: {avg_train_losses.get('L1', 0):.4f}")
+        if LAMBDA_PERCEPTUAL > 0:
+            aux_losses.append(f"Perc: {avg_train_losses.get('perceptual', 0):.4f}")
+        if LAMBDA_SSIM > 0:
+            aux_losses.append(f"SSIM: {avg_train_losses.get('ssim', 0):.4f}")
+        if LAMBDA_SOBEL > 0:
+            aux_losses.append(f"Sobel: {avg_train_losses.get('sobel', 0):.4f}")
+        if LAMBDA_CLIP > 0:
+            aux_losses.append(f"CLIP: {avg_train_losses.get('clip', 0):.4f}")
+
+        if aux_losses:
+            epoch_msg += f", {', '.join(aux_losses)}"
+
+        print(epoch_msg)
 
         # --- Fase di Validazione ---
         avg_val_losses = _validate_one_epoch(epoch, model_G, model_D, val_loader, criterions)
@@ -477,10 +505,6 @@ def fit(
 
         # --- Salvataggio Checkpoint e Visualizzazioni ---
         if epoch % CHECKPOINT_EVERY_N_EPOCHS == 0:
-            # Assicurati che il modello sia in CPU e non wrappato per il salvataggio
-            model_to_save_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
-            model_to_save_D = model_D.module if isinstance(model_D, nn.DataParallel) else model_D
-
             avg_val_g_loss = avg_val_losses.get('G_total_val', float('inf'))
             is_best = bool(avg_val_g_loss < best_val_loss)
             if is_best:
@@ -488,9 +512,9 @@ def fit(
 
             save_checkpoint(
                 epoch=epoch,
-                model_G=model_to_save_G,
+                model_G=model_G,
                 optimizer_G=optimizer_G,
-                model_D=model_to_save_D,
+                model_D=model_D,
                 optimizer_D=optimizer_D,
                 best_val_loss=best_val_loss,
                 current_val_losses=avg_val_losses,
@@ -534,6 +558,5 @@ if __name__ == "__main__":
     fit(
         continue_from_last_checkpoint=True,
         epochs_to_run=100,
-        use_multi_gpu=True,
         show_images_inline=True,
     )
