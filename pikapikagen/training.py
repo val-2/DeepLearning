@@ -69,35 +69,22 @@ print(f"Utilizzo del dispositivo primario: {DEVICE}")
 IMAGE_DIR = os.path.join(OUTPUT_DIR, "images")
 
 
-class AugmentPipe:
+class GeometricAugmentPipe:
     """
-    Una pipeline di augmentation che non è un nn.Module.
-    Applica una serie di trasformazioni a un batch di immagini con una certa probabilità.
+    Una pipeline di augmentation più "gentile" che applica solo
+    trasformazioni geometriche. Non eredita da nn.Module per evitare
+    ogni possibile problema con il grafo computazionale.
     """
-
     def __init__(self, p=0.5):
-        # Probabilità con cui l'intero set di augmentations viene applicato
         self.p = p
-
-        # Usiamo T.Compose che è lo standard per le sequenze di trasformazioni in torchvision
-        self.transforms = T.Compose(
-            [
-                T.RandomHorizontalFlip(p=0.5),
-                T.RandomAffine(
-                    degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05), fill=1
-                ),  # fill=1 per riempire con bianco (immagini in [-1, 1])
-                T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
-                T.RandomHorizontalFlip(p=0.5),
-            ]
-        )
+        self.transforms = T.Compose([
+            T.RandomHorizontalFlip(p=0.5),
+            T.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05), fill=1),
+        ])
 
     def __call__(self, images):
-        """
-        Applica le trasformazioni in modo stocastico.
-        """
         if self.p > 0 and torch.rand(1).item() < self.p:
             return self.transforms(images)
-        # Altrimenti, ritorna le immagini non modificate
         return images
 
 
@@ -211,8 +198,8 @@ def train_generator(model_G, model_D, optimizer_G, batch, criterions, device):
     )
     loss_G.backward()
 
-    # Clipping per la stabilità generale
-    torch.nn.utils.clip_grad_norm_(model_G.parameters(), 1.0)
+    # RE-INTRODOTTO: È la valvola di sicurezza essenziale contro l'esplosione dei gradienti.
+    # torch.nn.utils.clip_grad_norm_(model_G.parameters(), 1.0)
 
     optimizer_G.step()
 
@@ -322,9 +309,8 @@ def fit(
         DEVICE
     )
     model_D = PikaPikaDisc().to(DEVICE)
-    # Crea l'istanza della nostra pipeline di augmentation
-    # p ridotto per stabilizzare le fasi iniziali del training
-    augment_pipe = AugmentPipe(p=0.2)
+    # Usa la nuova pipeline di augmentation, più stabile per l'inizio del training
+    augment_pipe = GeometricAugmentPipe(p=0.8)
 
     # --- Supporto Multi-GPU ---
     if use_multi_gpu and torch.cuda.device_count() > 1:
