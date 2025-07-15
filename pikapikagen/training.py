@@ -342,7 +342,8 @@ def train_discriminator(model_G, model_D, optimizer_D, batch, device, augment_pi
     # --- 1. Score su immagini reali ---
     real_images_aug = augment_pipe(real_images)
     d_real_pred = model_D(real_images_aug)
-    real_labels = torch.ones_like(d_real_pred, device=device)
+    # Label smoothing per immagini reali: valori casuali tra 0.8 e 1.0
+    real_labels = torch.rand_like(d_real_pred, device=device) * 0.2 + 0.8  # [0.8, 1.0]
     loss_d_real = criterion_gan(d_real_pred, real_labels)
 
     # --- 2. Score su immagini generate ---
@@ -353,7 +354,8 @@ def train_discriminator(model_G, model_D, optimizer_D, batch, device, augment_pi
         fake_images_aug = augment_pipe(fake_images)
 
     d_fake_pred = model_D(fake_images_aug)
-    fake_labels = torch.zeros_like(d_fake_pred, device=device)
+    # Label smoothing per immagini false: valori casuali tra 0.0 e 0.2
+    fake_labels = torch.rand_like(d_fake_pred, device=device) * 0.2  # [0.0, 0.2]
     loss_d_fake = criterion_gan(d_fake_pred, fake_labels)
 
     # --- Calcolo Loss totale del Discriminatore (semplificata) ---
