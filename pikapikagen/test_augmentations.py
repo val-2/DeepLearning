@@ -5,7 +5,7 @@ from transformers import AutoTokenizer
 import os
 
 from pokemon_dataset import PokemonDataset
-from training import AugmentPipe
+from training import GeometricAugmentPipe
 from utils import denormalize_image
 
 
@@ -38,7 +38,7 @@ def visualize_augmentations():
 
     # --- Definisci la pipeline di augmentation ---
     # con p=1.0 per essere sicuri che venga sempre applicata
-    augment_pipe = AugmentPipe(p=1.0)
+    augment_pipe = GeometricAugmentPipe(p=1.0)
 
     # --- Crea la griglia di visualizzazione ---
     num_total_images = NUM_EXAMPLES + 1  # +1 per l'immagine originale
