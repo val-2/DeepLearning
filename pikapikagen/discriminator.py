@@ -33,7 +33,6 @@ class PikaPikaDisc(nn.Module):
             nn.Conv2d(512, 1, kernel_size=4, stride=1, padding=0, bias=False),
 
             nn.Flatten(),
-            nn.Sigmoid()
         )
 
     def forward(self, x):

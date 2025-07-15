@@ -188,7 +188,7 @@ def _initialize_criterions():
 
 def _load_checkpoint(model_G, model_D, optimizer_G, optimizer_D):
     """Carica il checkpoint più recente se esiste."""
-    start_epoch = 0
+    start_epoch = 1
     train_losses_history = []
     val_losses_history = []
     best_val_loss = float("inf")
@@ -310,9 +310,15 @@ def _validate_one_epoch(epoch, model_G, model_D, val_loader, criterions):
             else:
                 loss_g_gan_val = torch.tensor(0.0, device=DEVICE)
 
-            # Per ora usiamo solo la loss adversariale per la validazione
-            # Si possono aggiungere altre loss ausiliarie qui se necessario
-            loss_G_val = loss_g_gan_val
+            # Calcola tutte le loss ausiliarie attive per la validazione
+            loss_l1_val = criterions["l1"](generated_images, real_images) if LAMBDA_L1 > 0 and criterions["l1"] is not None else torch.tensor(0.0, device=DEVICE)
+            loss_perceptual_val = criterions["perceptual"](generated_images, real_images) if LAMBDA_PERCEPTUAL > 0 and criterions["perceptual"] is not None else torch.tensor(0.0, device=DEVICE)
+            loss_ssim_val = criterions["ssim"](generated_images, real_images) if LAMBDA_SSIM > 0 and criterions["ssim"] is not None else torch.tensor(0.0, device=DEVICE)
+            loss_sobel_val = criterions["sobel"](generated_images, real_images) if LAMBDA_SOBEL > 0 and criterions["sobel"] is not None else torch.tensor(0.0, device=DEVICE)
+            loss_clip_val = criterions["clip"](generated_images, batch["description"]) if LAMBDA_CLIP > 0 and criterions["clip"] is not None else torch.tensor(0.0, device=DEVICE)
+
+            # Loss totale per la validazione (stesse proporzioni del training)
+            loss_G_val = loss_g_gan_val + LAMBDA_L1 * loss_l1_val + LAMBDA_PERCEPTUAL * loss_perceptual_val + LAMBDA_SSIM * loss_ssim_val + LAMBDA_SOBEL * loss_sobel_val + LAMBDA_CLIP * loss_clip_val
 
             val_epoch_losses["G_total_val"].append(loss_G_val.item())
             val_epoch_losses["G_adv_val"].append(loss_g_gan_val.item())
