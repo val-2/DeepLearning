@@ -196,10 +196,10 @@ class ImageDecoder(nn.Module):
         initial_input = torch.cat([noise, context_vector], dim=1)
 
         # 3. Proietta e rimodella
-        # x.shape: (B, 256 * 2 * 2)
+        # x.shape: (B, 256 * 4 * 4)
         x = self.initial_projection(initial_input)
-        # x.shape: (B, 256, 2, 2)
-        x = x.view(x.size(0), 256, 2, 2)
+        # x.shape: (B, 256, 4, 4)
+        x = x.view(x.size(0), 256, 4, 4)
 
         # 5. Passa attraverso i blocchi del decoder
         attention_maps = []
