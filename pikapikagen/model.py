@@ -35,24 +35,6 @@ class TextEncoder(nn.Module):
         return encoder_output
 
 
-class MappingNetwork(nn.Module):
-    """
-    An MLP that maps a noise vector z to an intermediate style vector w.
-    Inspired by StyleGAN.
-    """
-    def __init__(self, z_dim, w_dim, num_layers=8):
-        super().__init__()
-        layers = []
-        for i in range(num_layers):
-            in_dim = z_dim if i == 0 else w_dim
-            layers.append(nn.Linear(in_dim, w_dim))
-            layers.append(nn.LeakyReLU(0.2, inplace=True))
-        self.net = nn.Sequential(*layers)
-
-    def forward(self, z):
-        return self.net(z)
-
-
 class ImageCrossAttention(nn.Module):
     """
     Modulo di Cross-Attention.
@@ -157,33 +139,29 @@ class ImageDecoder(nn.Module):
     def __init__(self, noise_dim, text_embed_dim, final_image_channels=3):
         super().__init__()
 
-        w_dim = 256 # Dimension of the intermediate style vector
-
-        # Mapping network per trasformare z in w
-        self.mapping_network = MappingNetwork(z_dim=noise_dim, w_dim=w_dim)
-
-        # Meccanismo per calcolare il contesto iniziale come media pesata
-        self.initial_context_attention = nn.Sequential(
+        # Meccanismo per calcolare i punteggi di attenzione per il contesto iniziale.
+        self.initial_context_scorer = nn.Sequential(
             nn.Linear(in_features=text_embed_dim, out_features=512),
             nn.Tanh(),
-            nn.Linear(in_features=512, out_features=1),
-            nn.Softmax(dim=1)
+            nn.Linear(in_features=512, out_features=1)
+            # Il Softmax viene applicato nel forward pass per poter usare la maschera
         )
 
-        # Proiezione iniziale direttamente a 256 canali per l'attenzione.
-        # Input: (B, w_dim + text_embed_dim) -> Output: (B, 256 * 4 * 4)
-        self.initial_projection = nn.Linear(w_dim + text_embed_dim, 256 * 4 * 4)
+        # Proiezione lineare iniziale a una feature map 2x2.
+        self.initial_projection = nn.Linear(noise_dim + text_embed_dim, 256 * 2 * 2)
 
         # Blocchi del decoder basati su GeneratorBlock
         self.blocks = nn.ModuleList([
+            # Input: (B, 256, 2, 2)   -> Output: (B, 256, 4, 4)
+            DecoderBlock(in_channels=256, out_channels=256, use_attention=False),
             # Input: (B, 256, 4, 4)   -> Output: (B, 256, 8, 8)
             DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
             # Input: (B, 256, 8, 8)   -> Output: (B, 256, 16, 16)
             DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
             # Input: (B, 256, 16, 16)  -> Output: (B, 256, 32, 32)
-            DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
+            DecoderBlock(in_channels=256, out_channels=256, use_attention=False),
             # Input: (B, 256, 32, 32)  -> Output: (B, 128, 64, 64)
-            DecoderBlock(in_channels=256, out_channels=128, use_attention=True),
+            DecoderBlock(in_channels=256, out_channels=128, use_attention=False),
             # Input: (B, 128, 64, 64)  -> Output: (B, 64, 128, 128)
             DecoderBlock(in_channels=128, out_channels=64, use_attention=False),
             # Input: (B, 64, 128, 128) -> Output: (B, 32, 256, 256)
@@ -201,24 +179,34 @@ class ImageDecoder(nn.Module):
         # attention_mask.shape: (B, seq_len)
 
         # 1. Calcola il vettore di contesto iniziale con una media pesata (ATTENZIONE #1)
+        # Calcola i punteggi (logits) per ogni token del testo
+        attn_scores = self.initial_context_scorer(encoder_output_full)
+
+        # Applica la maschera di padding prima del softmax.
+        # Imposta i punteggi dei token di padding a -infinito.
+        if attention_mask is not None:
+            # La maschera è (B, seq_len), i punteggi (B, seq_len, 1)
+            # Il broadcast si occupa di allineare le dimensioni.
+            attn_scores.masked_fill_(attention_mask.unsqueeze(-1) == 0, -1e9)
+
+        # Ora applica il softmax per ottenere i pesi.
         # attention_weights.shape: (B, seq_len, 1)
-        attention_weights = self.initial_context_attention(encoder_output_full)
+        attention_weights = torch.softmax(attn_scores, dim=1)
+
+        # Calcola il contesto come media pesata degli output dell'encoder.
         # context_vector.shape: (B, text_embed_dim)
         context_vector = torch.sum(attention_weights * encoder_output_full, dim=1)
 
-        # 2. Mappa il rumore z al vettore di stile intermedio w
-        # w.shape: (B, w_dim)
-        w = self.mapping_network(noise)
+        # 2. Prepara il vettore di input iniziale per la proiezione
+        #    Si usa direttamente il rumore 'noise' invece del vettore di stile 'w'
+        # initial_input.shape: (B, noise_dim + text_embed_dim)
+        initial_input = torch.cat([noise, context_vector], dim=1)
 
-        # 3. Prepara il vettore di input iniziale per la proiezione
-        # initial_input.shape: (B, w_dim + text_embed_dim)
-        initial_input = torch.cat([w, context_vector], dim=1)
-
-        # 4. Proietta e rimodella
-        # x.shape: (B, 256 * 4 * 4)
+        # 3. Proietta e rimodella
+        # x.shape: (B, 256 * 2 * 2)
         x = self.initial_projection(initial_input)
-        # x.shape: (B, 256, 4, 4)
-        x = x.view(x.size(0), 256, 4, 4)
+        # x.shape: (B, 256, 2, 2)
+        x = x.view(x.size(0), 256, 2, 2)
 
         # 5. Passa attraverso i blocchi del decoder
         attention_maps = []
