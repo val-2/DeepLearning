@@ -439,7 +439,7 @@ def fit(
     optimizer_G, optimizer_D = _initialize_optimizers(model_G, model_D)
     criterions = _initialize_criterions()
 
-    augment_pipe = GeometricAugmentPipe(p=0.5)
+    augment_pipe = GeometricAugmentPipe(p=0.0)
 
     start_epoch = 1
     train_losses_history = []
