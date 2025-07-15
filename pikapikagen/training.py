@@ -347,7 +347,7 @@ def train_discriminator(model_G, model_D, optimizer_D, batch, device, augment_pi
 
     # --- 2. Score su immagini generate ---
     with torch.no_grad():
-        encoder_output = model_G.text_encoder(token_ids)
+        encoder_output = model_G.text_encoder(token_ids, attention_mask=attention_mask)
         noise = torch.randn(batch_size, NOISE_DIM, device=device)
         fake_images = model_G.image_decoder(noise, encoder_output, attention_mask)[0]
         fake_images_aug = augment_pipe(fake_images)
@@ -376,7 +376,7 @@ def train_generator(model_G, model_D, optimizer_G, batch, criterions, device):
     attention_mask = batch["attention_mask"].to(device)
     real_images = batch["image"].to(device)
 
-    encoder_output_g = model_G.text_encoder(token_ids)
+    encoder_output_g = model_G.text_encoder(token_ids, attention_mask=attention_mask)
 
     noise = torch.randn(real_images.size(0), NOISE_DIM, device=device)
     generated_images, _, _ = model_G.image_decoder(noise, encoder_output_g, attention_mask)
