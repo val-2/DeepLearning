@@ -417,6 +417,16 @@ def fit(
             f"Loss G (Val): {avg_val_losses.get('G_total_val', 0):.4f}"
         )
 
+        save_comparison_grid(
+            epoch,
+            model_G,
+            fixed_train_batch,
+            "train",
+            DEVICE,
+            IMAGE_DIR,
+            show_inline=show_images_inline,
+        )
+
         # --- Salvataggio Checkpoint e Visualizzazioni ---
         if epoch % CHECKPOINT_EVERY_N_EPOCHS == 0:
             # Assicurati che il modello sia in CPU e non wrappato per il salvataggio
@@ -445,37 +455,23 @@ def fit(
             save_comparison_grid(
                 epoch,
                 model_G,
-                fixed_train_batch,
-                "train",
-                DEVICE,
-                IMAGE_DIR,
-                show_inline=show_images_inline,
-            )
-            save_comparison_grid(
-                epoch,
-                model_G,
                 fixed_val_batch,
                 "val",
                 DEVICE,
                 IMAGE_DIR,
-                show_inline=show_images_inline,
+                show_inline=False,
             )
-            save_attention_visualization(
-                epoch,
-                model_G,
-                tokenizer,
-                fixed_val_batch,
-                DEVICE,
-                "val",
-                IMAGE_DIR,
-                show_inline=show_images_inline,
-            )
-            # Salva i grafici delle loss
-            save_plot_losses(
-                [d.get('G_total', 0) for d in train_losses_history],
-                [d.get('D_loss', 0) for d in train_losses_history],
-                output_dir=OUTPUT_DIR
-            )
+            # save_attention_visualization(
+            #     epoch,
+            #     model_G,
+            #     tokenizer,
+            #     fixed_val_batch,
+            #     DEVICE,
+            #     "val",
+            #     IMAGE_DIR,
+            #     show_inline=False,
+            # )
+
 
     print("--- Addestramento completato ---")
     return model_G, model_D, train_losses_history, val_losses_history
