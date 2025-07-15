@@ -12,7 +12,7 @@ import torchvision.transforms as T
 # Import separati per chiarezza
 from pokemon_dataset import PokemonDataset
 from model import PikaPikaGen
-from discriminator import PatchGANDiscriminator
+from discriminator import PikaPikaDisc
 from losses import VGGPerceptualLoss, SSIMLoss, SobelLoss
 from clip_loss import create_clip_loss
 from augment import GeometricAugmentPipe
@@ -39,16 +39,13 @@ NUM_VIZ_SAMPLES = 4 # Numero di campioni da visualizzare nelle griglie di confro
 CHECKPOINT_EVERY_N_EPOCHS = 5
 # Seed per la riproducibilità
 RANDOM_SEED = 42
-# Pesi per WGAN-GP e loss ausiliarie (disattivate)
+# Pesi per loss - simplified for basic GAN training
 LAMBDA_L1 = 0.2
 LAMBDA_PERCEPTUAL = 0.0
 LAMBDA_SSIM = 0.0
 LAMBDA_SOBEL = 0.0
 LAMBDA_CLIP = 0.0
 LAMBDA_ADV = 1.0
-# Parametri per ADA e R1 rimossi
-DISCRIMINATOR_ITERATIONS = 1  # Numero di iterazioni del discriminatore per ogni iterazione del generatore
-LAMBDA_MISMATCH = 0.5 # Peso per la loss del testo non corrispondente
 
 
 # --- Setup del Dispositivo ---
@@ -72,8 +69,243 @@ print(f"Utilizzo del dispositivo primario: {DEVICE}")
 IMAGE_DIR = os.path.join(OUTPUT_DIR, "images")
 
 
+def _setup_directories():
+    """Crea le directory di output necessarie."""
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    os.makedirs(IMAGE_DIR, exist_ok=True)
+    print("Directory di output create.")
+
+
+def _get_dataloaders(tokenizer):
+    """Prepara i dataset e i dataloader per training e validazione."""
+    # Crea un'istanza per il training e la validazione (senza aumentazioni interne)
+    train_full_dataset = PokemonDataset(tokenizer=tokenizer)
+    val_full_dataset = PokemonDataset(tokenizer=tokenizer)
+
+    # --- Divisione deterministica degli indici ---
+    assert len(train_full_dataset) == len(val_full_dataset)
+    dataset_size = len(train_full_dataset)
+    train_size = int(TRAIN_VAL_SPLIT * dataset_size)
+    val_size = dataset_size - train_size
+
+    train_indices_subset, val_indices_subset = random_split(
+        TensorDataset(torch.arange(dataset_size)),  # type: ignore
+        [train_size, val_size],
+        generator=torch.Generator().manual_seed(RANDOM_SEED),
+    )
+
+    train_dataset = torch.utils.data.Subset(
+        train_full_dataset, train_indices_subset.indices
+    )
+    val_dataset = torch.utils.data.Subset(val_full_dataset, val_indices_subset.indices)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=NUM_WORKERS,
+        pin_memory=True,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=NUM_WORKERS,
+        pin_memory=True,
+    )
+    return train_loader, val_loader, train_dataset, val_dataset
+
+
+def _get_visualization_batches(train_dataset, val_dataset):
+    """Crea batch fissi per la visualizzazione durante il training."""
+    vis_generator = torch.Generator().manual_seed(RANDOM_SEED)
+    fixed_train_batch = next(
+        iter(
+            DataLoader(
+                torch.utils.data.Subset(
+                    train_dataset,
+                    torch.randperm(len(train_dataset), generator=vis_generator)[
+                        :NUM_VIZ_SAMPLES
+                    ].tolist(),
+                ),
+                batch_size=NUM_VIZ_SAMPLES,
+                shuffle=False,
+            )
+        )
+    )
+    fixed_val_batch = next(
+        iter(
+            DataLoader(
+                torch.utils.data.Subset(
+                    val_dataset,
+                    torch.randperm(len(val_dataset), generator=vis_generator)[
+                        :NUM_VIZ_SAMPLES
+                    ].tolist(),
+                ),
+                batch_size=NUM_VIZ_SAMPLES,
+                shuffle=False,
+            )
+        )
+    )
+    return fixed_train_batch, fixed_val_batch
+
+
+def _initialize_models():
+    """Inizializza i modelli Generatore e Discriminatore."""
+    model_G = PikaPikaGen(
+        text_encoder_model_name=MODEL_NAME,
+        noise_dim=NOISE_DIM,
+        fine_tune_embeddings=True,
+    ).to(DEVICE)
+
+    model_D = PikaPikaDisc(img_channels=3).to(DEVICE)
+    return model_G, model_D
+
+
+def _initialize_optimizers(model_G, model_D):
+    """Inizializza gli ottimizzatori Adam per i modelli."""
+    optimizer_G = optim.Adam(
+        model_G.parameters(), lr=LEARNING_RATE_G, betas=(0.5, 0.999)
+    )
+    optimizer_D = optim.Adam(
+        model_D.parameters(), lr=LEARNING_RATE_D, betas=(0.5, 0.999)
+    )
+    return optimizer_G, optimizer_D
+
+
+def _initialize_criterions():
+    """Inizializza le funzioni di loss."""
+    criterion_gan = nn.BCEWithLogitsLoss()
+    criterions = {
+        "gan": criterion_gan,
+        "l1": nn.L1Loss(),
+        "perceptual": VGGPerceptualLoss(device=DEVICE).to(DEVICE),
+        "ssim": SSIMLoss(size_average=True),
+        "sobel": SobelLoss(),
+        "clip": create_clip_loss(device=str(DEVICE)) if LAMBDA_CLIP > 0 else None
+    }
+    return criterions
+
+
+def _load_checkpoint(model_G, model_D, optimizer_G, optimizer_D):
+    """Carica il checkpoint più recente se esiste."""
+    start_epoch = 0
+    train_losses_history = []
+    val_losses_history = []
+    best_val_loss = float("inf")
+
+    sorted_checkpoints = find_sorted_checkpoints(CHECKPOINT_DIR)
+    if sorted_checkpoints:
+        latest_checkpoint_path = sorted_checkpoints[-1]
+        print(f"Caricamento del checkpoint: {latest_checkpoint_path}")
+        checkpoint = torch.load(latest_checkpoint_path, weights_only=False)
+
+        # Caricamento degli stati per i modelli e gli ottimizzatori
+        model_to_load_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
+        model_to_load_G.load_state_dict(checkpoint["generator_state_dict"])
+
+        model_to_load_D = model_D.module if isinstance(model_D, nn.DataParallel) else model_D
+        model_to_load_D.load_state_dict(checkpoint["discriminator_state_dict"])
+
+        optimizer_G.load_state_dict(checkpoint["optimizer_G_state_dict"])
+        optimizer_D.load_state_dict(checkpoint["optimizer_D_state_dict"])
+
+        # Caricamento dello stato del training
+        start_epoch = checkpoint["epoch"] + 1
+        train_losses_history = checkpoint.get("train_losses_history", [])
+        val_losses_history = checkpoint.get("val_losses_history", [])
+        best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        print(f"Training ripreso dall'epoca {start_epoch}")
+    else:
+        print("Nessun checkpoint trovato, inizio del training da zero.")
+    return start_epoch, train_losses_history, val_losses_history, best_val_loss
+
+
+def _train_one_epoch(epoch, model_G, model_D, train_loader, optimizer_D, optimizer_G, criterions, augment_pipe):
+    """Esegue un'epoca di training."""
+    model_G.train()
+    model_D.train()
+    train_epoch_losses = {"G_total": [], "D_loss": [], "D_real": [], "D_fake": []}
+
+    progress_bar = tqdm(
+        train_loader, desc=f"Training Epoca {epoch}", leave=False, unit="batch"
+    )
+    for batch_idx, batch in enumerate(progress_bar):
+
+        # --- Training del Discriminatore ---
+        d_losses = train_discriminator(model_G, model_D, optimizer_D, batch, DEVICE, augment_pipe, criterions["gan"])
+        for key, value in d_losses.items():
+            if key not in train_epoch_losses:
+                train_epoch_losses[key] = []
+            train_epoch_losses[key].append(value)
+
+        # --- Training del Generatore ---
+        g_losses = train_generator(
+            model_G, model_D, optimizer_G, batch, criterions, DEVICE
+        )
+
+        # Aggiorna le medie delle loss del generatore
+        for key, value in g_losses.items():
+            if key not in train_epoch_losses:
+                train_epoch_losses[key] = []
+            train_epoch_losses[key].append(value)
+
+        # Aggiorna la barra di progresso con le loss medie
+        mean_d_loss = np.mean(train_epoch_losses["D_loss"])
+        mean_g_loss = np.mean(train_epoch_losses["G_total"])
+        progress_bar.set_postfix(
+            {"Loss_D": f"{mean_d_loss:.4f}", "Loss_G": f"{mean_g_loss:.4f}"}
+        )
+
+    # Calcolo delle loss medie per l'epoca di training
+    avg_train_losses = {
+        key: np.mean(values) for key, values in train_epoch_losses.items()
+    }
+    return avg_train_losses
+
+
+def _validate_one_epoch(epoch, model_G, model_D, val_loader, criterions):
+    """Esegue un'epoca di validazione."""
+    model_G.eval()
+    val_epoch_losses = {"G_total_val": [], "G_adv_val": []}
+
+    progress_bar_val = tqdm(
+        val_loader, desc=f"Validazione Epoca {epoch}", leave=False, unit="batch"
+    )
+    with torch.no_grad():
+        for batch in progress_bar_val:
+            token_ids = batch["text"].to(DEVICE)
+            attention_mask = batch["attention_mask"].to(DEVICE)
+            real_images = batch["image"].to(DEVICE)
+
+            # Calcolo della loss del generatore sul set di validazione
+            model_to_use_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
+            encoder_output_g = model_to_use_G.text_encoder(token_ids)
+
+            noise = torch.randn(real_images.size(0), NOISE_DIM, device=DEVICE)
+            generated_images, _, _ = model_to_use_G.image_decoder(noise, encoder_output_g, attention_mask)
+
+            d_pred_val = model_D(generated_images)
+            real_labels = torch.ones_like(d_pred_val, device=DEVICE)
+            loss_g_gan_val = criterions["gan"](d_pred_val, real_labels)
+
+            # Aggiungi altre loss di validazione se necessario (es. L1)
+            loss_G_val = loss_g_gan_val
+
+            val_epoch_losses["G_total_val"].append(loss_G_val.item())
+            val_epoch_losses["G_adv_val"].append(loss_g_gan_val.item())
+
+            mean_g_loss_val = np.mean(val_epoch_losses["G_total_val"])
+            progress_bar_val.set_postfix({"Loss_G_val": f"{mean_g_loss_val:.4f}"})
+
+    avg_val_losses = {
+        key: np.mean(values) for key, values in val_epoch_losses.items()
+    }
+    return avg_val_losses
+
+
 def train_discriminator(model_G, model_D, optimizer_D, batch, device, augment_pipe, criterion_gan):
-    """Esegue un passo di training per il Discriminatore (PatchGAN)."""
+    """Esegue un passo di training per il Discriminatore semplice (solo immagini)."""
     optimizer_D.zero_grad()
 
     token_ids = batch["text"].to(device)
@@ -81,38 +313,26 @@ def train_discriminator(model_G, model_D, optimizer_D, batch, device, augment_pi
     real_images = batch["image"].to(device)
     batch_size = real_images.size(0)
 
-    with torch.no_grad():
-        model_to_use_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
-        encoder_output = model_to_use_G.text_encoder(token_ids)
-        attention_weights = model_to_use_G.image_decoder.initial_context_attention(encoder_output)
-        context_vector = torch.sum(attention_weights * encoder_output, dim=1)
-
-    # --- 1. Score su immagini reali, testo corretto ---
+    # --- 1. Score su immagini reali ---
     real_images_aug = augment_pipe(real_images)
-    d_real_pred = model_D(real_images_aug, context_vector)
+    d_real_pred = model_D(real_images_aug)
     real_labels = torch.ones_like(d_real_pred, device=device)
     loss_d_real = criterion_gan(d_real_pred, real_labels)
 
-    # --- 2. Score su immagini reali, testo sbagliato (mismatch) ---
-    # Mescola i vettori di contesto per creare coppie non corrispondenti
-    wrong_context_vector = torch.roll(context_vector, shifts=1, dims=0)
-    d_wrong_pred = model_D(real_images_aug.detach(), wrong_context_vector)
-    fake_labels_for_wrong = torch.zeros_like(d_wrong_pred, device=device)
-    loss_d_mismatch = criterion_gan(d_wrong_pred, fake_labels_for_wrong)
-
-
-    # --- 3. Score su immagini generate, testo corretto ---
+    # --- 2. Score su immagini generate ---
     with torch.no_grad():
+        model_to_use_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
+        encoder_output = model_to_use_G.text_encoder(token_ids)
         noise = torch.randn(batch_size, NOISE_DIM, device=device)
         fake_images = model_to_use_G.image_decoder(noise, encoder_output, attention_mask)[0]
         fake_images_aug = augment_pipe(fake_images)
 
-    d_fake_pred = model_D(fake_images_aug, context_vector)
+    d_fake_pred = model_D(fake_images_aug)
     fake_labels = torch.zeros_like(d_fake_pred, device=device)
     loss_d_fake = criterion_gan(d_fake_pred, fake_labels)
 
-    # --- Calcolo Loss totale del Discriminatore ---
-    loss_D = loss_d_real + loss_d_fake + LAMBDA_MISMATCH * loss_d_mismatch
+    # --- Calcolo Loss totale del Discriminatore (semplificata) ---
+    loss_D = loss_d_real + loss_d_fake
     loss_D.backward()
     optimizer_D.step()
 
@@ -120,12 +340,11 @@ def train_discriminator(model_G, model_D, optimizer_D, batch, device, augment_pi
         "D_loss": loss_D.item(),
         "D_real": loss_d_real.item(),
         "D_fake": loss_d_fake.item(),
-        "D_mismatch": loss_d_mismatch.item()
     }
 
 
 def train_generator(model_G, model_D, optimizer_G, batch, criterions, device):
-    """Esegue un passo di training per il generatore con loss GAN standard."""
+    """Esegue un passo di training per il generatore con GAN semplice."""
     optimizer_G.zero_grad()
 
     token_ids = batch["text"].to(device)
@@ -134,20 +353,18 @@ def train_generator(model_G, model_D, optimizer_G, batch, criterions, device):
 
     model_to_use_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
     encoder_output_g = model_to_use_G.text_encoder(token_ids)
-    attention_weights_g = model_to_use_G.image_decoder.initial_context_attention(encoder_output_g)
-    context_vector_g = torch.sum(attention_weights_g * encoder_output_g, dim=1)
 
     noise = torch.randn(real_images.size(0), NOISE_DIM, device=device)
     generated_images, _, _ = model_to_use_G.image_decoder(noise, encoder_output_g, attention_mask)
 
-    # Score del discriminatore sulle immagini generate
-    d_pred_on_fake = model_D(generated_images, context_vector_g)
+    # Score del discriminatore sulle immagini generate (solo immagini, no testo)
+    d_pred_on_fake = model_D(generated_images)
 
     # La loss del generatore vuole che il discriminatore classifichi le immagini generate come reali (1)
     real_labels = torch.ones_like(d_pred_on_fake, device=device)
     loss_g_gan = criterions["gan"](d_pred_on_fake, real_labels)
 
-    # Loss ausiliarie (attualmente disattivate tramite lambda)
+    # Loss ausiliarie (manteniamo come richiesto)
     loss_l1 = criterions["l1"](generated_images, real_images) if LAMBDA_L1 > 0 else torch.tensor(0.0, device=device)
     loss_perceptual = criterions["perceptual"](generated_images, real_images) if LAMBDA_PERCEPTUAL > 0 else torch.tensor(0.0, device=device)
     loss_ssim = criterions["ssim"](generated_images, real_images) if LAMBDA_SSIM > 0 else torch.tensor(0.0, device=device)
@@ -185,115 +402,21 @@ def fit(
 ):
     """
     Funzione principale per l'addestramento e la validazione del modello PikaPikaGen.
+    Training semplificato con discriminatore che accetta solo immagini.
     """
-    print("--- Impostazioni di Training con PatchGAN ---")
+    print("--- Impostazioni di Training Semplificate ---")
     print(f"Utilizzo del dispositivo: {DEVICE}")
 
-    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    os.makedirs(IMAGE_DIR, exist_ok=True)
+    _setup_directories()
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
-    # --- Creazione dei Dataset ---
-    # Crea un'istanza per il training e la validazione (senza aumentazioni interne)
-    train_full_dataset = PokemonDataset(tokenizer=tokenizer)
-    val_full_dataset = PokemonDataset(tokenizer=tokenizer)
+    train_loader, val_loader, train_dataset, val_dataset = _get_dataloaders(tokenizer)
+    fixed_train_batch, fixed_val_batch = _get_visualization_batches(train_dataset, val_dataset)
 
-    # --- Divisione deterministica degli indici ---
-    assert len(train_full_dataset) == len(val_full_dataset)
-    dataset_size = len(train_full_dataset)
-    train_size = int(TRAIN_VAL_SPLIT * dataset_size)
-    val_size = dataset_size - train_size
-
-    train_indices_subset, val_indices_subset = random_split(
-        TensorDataset(torch.arange(dataset_size)),  # type: ignore
-        [train_size, val_size],
-        generator=torch.Generator().manual_seed(RANDOM_SEED),
-    )
-
-    train_dataset = torch.utils.data.Subset(
-        train_full_dataset, train_indices_subset.indices
-    )
-    val_dataset = torch.utils.data.Subset(val_full_dataset, val_indices_subset.indices)
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=True,
-        num_workers=NUM_WORKERS,
-        pin_memory=True,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-        num_workers=NUM_WORKERS,
-        pin_memory=True,
-    )
-
-    # --- Creazione deterministica dei batch per la visualizzazione ---
-    vis_generator = torch.Generator().manual_seed(RANDOM_SEED)
-    fixed_train_batch = next(
-        iter(
-            DataLoader(
-                torch.utils.data.Subset(
-                    train_dataset,
-                    torch.randperm(len(train_dataset), generator=vis_generator)[
-                        :NUM_VIZ_SAMPLES
-                    ].tolist(),
-                ),
-                batch_size=NUM_VIZ_SAMPLES,
-                shuffle=False,
-            )
-        )
-    )
-    fixed_val_batch = next(
-        iter(
-            DataLoader(
-                torch.utils.data.Subset(
-                    val_dataset,
-                    torch.randperm(len(val_dataset), generator=vis_generator)[
-                        :NUM_VIZ_SAMPLES
-                    ].tolist(),
-                ),
-                batch_size=NUM_VIZ_SAMPLES,
-                shuffle=False,
-            )
-        )
-    )
-
-    # --- Inizializzazione dei Modelli, Ottimizzatori e Loss ---
-    model_G = PikaPikaGen(
-        text_encoder_model_name=MODEL_NAME,
-        noise_dim=NOISE_DIM,
-        fine_tune_embeddings=True,
-    ).to(DEVICE)
-
-    model_D = PatchGANDiscriminator(
-        img_channels=3,
-        features_d=64,
-        n_layers=3,
-        text_embed_dim=256,
-    ).to(DEVICE)
-
-    # --- Ottimizzatori ---
-    optimizer_G = optim.Adam(
-        model_G.parameters(), lr=LEARNING_RATE_G, betas=(0.5, 0.999)
-    )
-    optimizer_D = optim.Adam(
-        model_D.parameters(), lr=LEARNING_RATE_D, betas=(0.5, 0.999)
-    )
-
-    # --- Funzioni di Loss ---
-    criterion_gan = nn.BCEWithLogitsLoss()
-    criterions = {
-        "gan": criterion_gan,
-        "l1": nn.L1Loss(),
-        "perceptual": VGGPerceptualLoss(device=DEVICE).to(DEVICE),
-        "ssim": SSIMLoss(size_average=True),
-        "sobel": SobelLoss(),
-        "clip": create_clip_loss(device=str(DEVICE)) if LAMBDA_CLIP > 0 else None
-    }
+    model_G, model_D = _initialize_models()
+    optimizer_G, optimizer_D = _initialize_optimizers(model_G, model_D)
+    criterions = _initialize_criterions()
 
     augment_pipe = GeometricAugmentPipe(p=0.5)
 
@@ -303,37 +426,15 @@ def fit(
         model_G = nn.DataParallel(model_G)
         model_D = nn.DataParallel(model_D)
 
-    # --- Caricamento del Checkpoint ---
     start_epoch = 0
     train_losses_history = []
     val_losses_history = []
     best_val_loss = float("inf")
 
     if continue_from_last_checkpoint:
-        sorted_checkpoints = find_sorted_checkpoints(CHECKPOINT_DIR)
-        if sorted_checkpoints:
-            latest_checkpoint_path = sorted_checkpoints[-1]
-            print(f"Caricamento del checkpoint: {latest_checkpoint_path}")
-            checkpoint = torch.load(latest_checkpoint_path, weights_only=False)
-
-            # Caricamento degli stati per i modelli e gli ottimizzatori
-            model_to_load_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
-            model_to_load_G.load_state_dict(checkpoint["generator_state_dict"])
-
-            model_to_load_D = model_D.module if isinstance(model_D, nn.DataParallel) else model_D
-            model_to_load_D.load_state_dict(checkpoint["discriminator_state_dict"])
-
-            optimizer_G.load_state_dict(checkpoint["optimizer_G_state_dict"])
-            optimizer_D.load_state_dict(checkpoint["optimizer_D_state_dict"])
-
-            # Caricamento dello stato del training
-            start_epoch = checkpoint["epoch"] + 1
-            train_losses_history = checkpoint.get("train_losses_history", [])
-            val_losses_history = checkpoint.get("val_losses_history", [])
-            best_val_loss = checkpoint.get("best_val_loss", float("inf"))
-            print(f"Training ripreso dall'epoca {start_epoch}")
-        else:
-            print("Nessun checkpoint trovato, inizio del training da zero.")
+        start_epoch, train_losses_history, val_losses_history, best_val_loss = _load_checkpoint(
+            model_G, model_D, optimizer_G, optimizer_D
+        )
     else:
         print("Inizio del training da zero (opzione 'continue' disabilitata).")
 
@@ -343,95 +444,21 @@ def fit(
         print(f"\n--- Epoca {epoch}/{start_epoch + epochs_to_run - 1} ---")
 
         # --- Fase di Training ---
-        model_G.train()
-        model_D.train()
-        train_epoch_losses = {"G_total": [], "D_loss": [], "D_real": [], "D_fake": [], "D_mismatch": []}
-
-        progress_bar = tqdm(
-            train_loader, desc=f"Training Epoca {epoch}", leave=False, unit="batch"
+        avg_train_losses = _train_one_epoch(
+            epoch, model_G, model_D, train_loader, optimizer_D, optimizer_G, criterions, augment_pipe
         )
-        for batch_idx, batch in enumerate(progress_bar):
-
-            # --- Training del Discriminatore ---
-            d_losses = train_discriminator(model_G, model_D, optimizer_D, batch, DEVICE, augment_pipe, criterion_gan)
-            for key, value in d_losses.items():
-                if key not in train_epoch_losses:
-                    train_epoch_losses[key] = []
-                train_epoch_losses[key].append(value)
-
-            # --- Training del Generatore ---
-            # Con il GAN standard, il generatore viene addestrato ad ogni passo.
-            if (batch_idx + 1) % DISCRIMINATOR_ITERATIONS == 0:
-                g_losses = train_generator(
-                    model_G, model_D, optimizer_G, batch, criterions, DEVICE
-                )
-
-                # Aggiorna le medie delle loss del generatore
-                for key, value in g_losses.items():
-                    if key not in train_epoch_losses:
-                        train_epoch_losses[key] = []
-                    train_epoch_losses[key].append(value)
-
-                # Aggiorna la barra di progresso con le loss medie
-                mean_d_loss = np.mean(train_epoch_losses["D_loss"])
-                mean_g_loss = np.mean(train_epoch_losses["G_total"])
-                progress_bar.set_postfix(
-                    {"Loss_D": f"{mean_d_loss:.4f}", "Loss_G": f"{mean_g_loss:.4f}"}
-                )
-
-        # Calcolo delle loss medie per l'epoca di training
-        avg_train_losses = {
-            key: np.mean(values) for key, values in train_epoch_losses.items()
-        }
         train_losses_history.append(avg_train_losses)
         avg_d_real = avg_train_losses.get('D_real', 0)
         avg_d_fake = avg_train_losses.get('D_fake', 0)
-        avg_d_mismatch = avg_train_losses.get('D_mismatch', 0)
         print(
             f"Fine Training Epoca {epoch} - "
             f"Loss G: {avg_train_losses.get('G_total', 0):.4f}, "
             f"Loss D: {avg_train_losses.get('D_loss', 0):.4f} "
-            f"(R: {avg_d_real:.4f}, F: {avg_d_fake:.4f}, M: {avg_d_mismatch:.4f})"
+            f"(R: {avg_d_real:.4f}, F: {avg_d_fake:.4f})"
         )
 
         # --- Fase di Validazione ---
-        model_G.eval()
-        val_epoch_losses = {"G_total_val": [], "G_adv_val": []}
-
-        progress_bar_val = tqdm(
-            val_loader, desc=f"Validazione Epoca {epoch}", leave=False, unit="batch"
-        )
-        with torch.no_grad():
-            for batch in progress_bar_val:
-                token_ids = batch["text"].to(DEVICE)
-                attention_mask = batch["attention_mask"].to(DEVICE)
-                real_images = batch["image"].to(DEVICE)
-
-                # Calcolo della loss del generatore sul set di validazione
-                model_to_use_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
-                encoder_output_g = model_to_use_G.text_encoder(token_ids)
-                attention_weights_g = model_to_use_G.image_decoder.initial_context_attention(encoder_output_g)
-                context_vector_g = torch.sum(attention_weights_g * encoder_output_g, dim=1)
-
-                noise = torch.randn(real_images.size(0), NOISE_DIM, device=DEVICE)
-                generated_images, _, _ = model_to_use_G.image_decoder(noise, encoder_output_g, attention_mask)
-
-                d_pred_val = model_D(generated_images, context_vector_g)
-                real_labels = torch.ones_like(d_pred_val, device=DEVICE)
-                loss_g_gan_val = criterions["gan"](d_pred_val, real_labels)
-
-                # Aggiungi altre loss di validazione se necessario (es. L1)
-                loss_G_val = loss_g_gan_val
-
-                val_epoch_losses["G_total_val"].append(loss_G_val.item())
-                val_epoch_losses["G_adv_val"].append(loss_g_gan_val.item())
-
-                mean_g_loss_val = np.mean(val_epoch_losses["G_total_val"])
-                progress_bar_val.set_postfix({"Loss_G_val": f"{mean_g_loss_val:.4f}"})
-
-        avg_val_losses = {
-            key: np.mean(values) for key, values in val_epoch_losses.items()
-        }
+        avg_val_losses = _validate_one_epoch(epoch, model_G, model_D, val_loader, criterions)
         val_losses_history.append(avg_val_losses)
         print(
             f"Fine Validazione Epoca {epoch} - "

@@ -29,7 +29,7 @@ def analyze_models(generator, discriminator):
     print("  [2] Image Decoder:")
     print(f"    - Totali:       {decoder_total:,}")
     print(f"    - Addestrabili: {decoder_trainable:,}")
-    
+
     print("  ---------------------------------")
     print(f"  Generator Totali:       {g_total:,}")
     print(f"  Generator Addestrabili: {g_trainable:,}")
@@ -60,7 +60,6 @@ def main():
     # Impostazioni coerenti con training.py
     model_name = "prajjwal1/bert-mini"
     noise_dim = 100
-    text_embed_dim = 256
     fine_tune_embeddings = True # Come da default nel training
 
     # Istanzia il generatore
@@ -71,7 +70,7 @@ def main():
     )
 
     # Istanzia il discriminatore
-    model_D = PikaPikaDisc(text_embed_dim=text_embed_dim)
+    model_D = PikaPikaDisc()
 
     analyze_models(model_G, model_D)
 
