@@ -24,14 +24,24 @@ class TextEncoder(nn.Module):
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=4)
 
-    def forward(self, token_ids):
+    def forward(self, token_ids, attention_mask=None):
         # 1. Ottieni gli embedding dai token ID
         # Shape: (batch_size, seq_len) -> (batch_size, seq_len, embedding_dim)
         embedded_text = self.embedding(token_ids)
 
-        # 2. Passa gli embedding attraverso il Transformer Encoder
+        # 2. Prepara la maschera di padding per il TransformerEncoder
+        # La maschera di HuggingFace è 1 per i token reali, 0 per il padding.
+        # TransformerEncoder si aspetta True per le posizioni da ignorare (padding).
+        src_key_padding_mask = None
+        if attention_mask is not None:
+            src_key_padding_mask = (attention_mask == 0)
+
+        # 3. Passa gli embedding attraverso il Transformer Encoder con la maschera
         # Shape: (batch_size, seq_len, embedding_dim) -> (batch_size, seq_len, embedding_dim)
-        encoder_output = self.transformer_encoder(embedded_text)
+        encoder_output = self.transformer_encoder(
+            src=embedded_text,
+            src_key_padding_mask=src_key_padding_mask
+        )
         return encoder_output
 
 
