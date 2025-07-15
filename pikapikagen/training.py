@@ -69,26 +69,32 @@ print(f"Utilizzo del dispositivo primario: {DEVICE}")
 IMAGE_DIR = os.path.join(OUTPUT_DIR, "images")
 
 
-class AugmentPipe(nn.Module):
+class AugmentPipe:
+    """
+    Una pipeline di augmentation che non è un nn.Module.
+    Applica una serie di trasformazioni a un batch di immagini con una certa probabilità.
+    """
+
     def __init__(self, p=0.5):
-        super().__init__()
         # Probabilità con cui l'intero set di augmentations viene applicato
         self.p = p
 
-        # Sequenza di trasformazioni. Sono stocastiche, quindi cambiano ad ogni chiamata.
-        # I valori sono scelti per essere leggeri e non distruggere troppo l'immagine.
-        self.transforms = nn.Sequential(
-            T.RandomHorizontalFlip(p=0.5),
-            T.RandomAffine(
-                degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05), fill=1
-            ),  # fill=1 per riempire con bianco (immagini in [-1, 1])
-            T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
-            T.RandomHorizontalFlip(p=0.5),
+        # Usiamo T.Compose che è lo standard per le sequenze di trasformazioni in torchvision
+        self.transforms = T.Compose(
+            [
+                T.RandomHorizontalFlip(p=0.5),
+                T.RandomAffine(
+                    degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05), fill=1
+                ),  # fill=1 per riempire con bianco (immagini in [-1, 1])
+                T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
+                T.RandomHorizontalFlip(p=0.5),
+            ]
         )
 
-    def forward(self, images):
-        # Applica le trasformazioni solo con una certa probabilità `p`
-        # Questo è il controllo principale "on/off" delle augmentations
+    def __call__(self, images):
+        """
+        Applica le trasformazioni in modo stocastico.
+        """
         if self.p > 0 and torch.rand(1).item() < self.p:
             return self.transforms(images)
         # Altrimenti, ritorna le immagini non modificate
@@ -318,7 +324,7 @@ def fit(
     model_D = PikaPikaDisc().to(DEVICE)
     # Crea l'istanza della nostra pipeline di augmentation
     # p ridotto per stabilizzare le fasi iniziali del training
-    augment_pipe = AugmentPipe(p=0.2).to(DEVICE)
+    augment_pipe = AugmentPipe(p=0.2)
 
     # --- Supporto Multi-GPU ---
     if use_multi_gpu and torch.cuda.device_count() > 1:
