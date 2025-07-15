@@ -33,7 +33,9 @@ class PikaPikaDisc(nn.Module):
         if bn:
             return nn.Sequential(
                 nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride, padding=padding, bias=False),
-                nn.BatchNorm2d(num_features=out_channels),
+                # Sostituito BatchNorm2d con GroupNorm, come raccomandato per WGAN-GP.
+                # GroupNorm con 1 gruppo è essenzialmente LayerNorm.
+                nn.GroupNorm(1, out_channels),
                 nn.LeakyReLU(0.2, inplace=True)
             )
         return nn.Sequential(
