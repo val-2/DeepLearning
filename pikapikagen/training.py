@@ -27,8 +27,8 @@ from utils import (
 
 # --- Parametri di Training Fissi ---
 MODEL_NAME = "prajjwal1/bert-mini"
-BATCH_SIZE = 32
-LEARNING_RATE_G = 1e-4
+BATCH_SIZE = 64
+LEARNING_RATE_G = 2e-4
 LEARNING_RATE_D = 2e-4
 NOISE_DIM = 100
 TRAIN_VAL_SPLIT = 0.9
