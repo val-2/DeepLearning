@@ -48,6 +48,7 @@ LAMBDA_SOBEL = 0.0
 LAMBDA_CLIP = 0.0
 LAMBDA_ADV = 1.0
 # Parametri per ADA e R1 rimossi
+CRITIC_ITERATIONS = 5  # Numero di iterazioni del critico per ogni iterazione del generatore
 
 
 # --- Setup del Dispositivo ---
@@ -290,10 +291,10 @@ def fit(
         )
 
     optimizer_G = optim.Adam(
-        model_G.parameters(), lr=LEARNING_RATE_G, betas=(0.5, 0.99)
+        model_G.parameters(), lr=LEARNING_RATE_G, betas=(0.0, 0.9)
     )
     optimizer_C = optim.Adam(
-        model_C.parameters(), lr=LEARNING_RATE_C, betas=(0.5, 0.99)
+        model_C.parameters(), lr=LEARNING_RATE_C, betas=(0.0, 0.9)
     )
 
     # Loss ausiliarie per il generatore
@@ -381,20 +382,30 @@ def fit(
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{final_epoch} [Training]")
         for i, batch in enumerate(pbar):
-            # --- Fase 1: Training del Critico ---
-            c_losses = train_critic(model_G, model_C, optimizer_C, batch, DEVICE, augment_pipe)
+            # --- Fase 1: Training del Critico (eseguito più volte) ---
+            c_losses_list = []
+            for _ in range(CRITIC_ITERATIONS):
+                c_loss_item = train_critic(
+                    model_G, model_C, optimizer_C, batch, DEVICE, augment_pipe
+                )
+                c_losses_list.append(c_loss_item)
 
-            # --- Fase 2: Training del Generatore ---
-            # WGAN fa più step per il critico, ma iniziamo con 1:1
-            g_losses = train_generator(model_G, model_C, optimizer_G, batch, criterions, DEVICE)
+            # --- Fase 2: Training del Generatore (eseguito una volta) ---
+            g_losses = train_generator(
+                model_G, model_C, optimizer_G, batch, criterions, DEVICE
+            )
 
-            epoch_losses_c.append(c_losses["C_loss"])
+            # Usa la media delle loss del critico dall'ultimo ciclo per il logging
+            avg_c_loss = np.mean([l["C_loss"] for l in c_losses_list])
+            avg_gp = np.mean([l["GP"] for l in c_losses_list])
+
+            epoch_losses_c.append(avg_c_loss)
             epoch_losses_g.append(g_losses["G_total"])
 
             postfix_dict = {
-                "C_loss": f"{c_losses['C_loss']:.3f}",
-                "GP": f"{c_losses['GP']:.3f}",
-                "G_loss": f"{g_losses['G_total']:.3f}"
+                "C_loss": f"{avg_c_loss:.3f}",
+                "GP": f"{avg_gp:.3f}",
+                "G_loss": f"{g_losses['G_total']:.3f}",
             }
             pbar.set_postfix(postfix_dict)
 
