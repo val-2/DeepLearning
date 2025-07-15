@@ -21,7 +21,6 @@ from utils import (
     find_sorted_checkpoints,
     CHECKPOINT_DIR,
     OUTPUT_DIR,
-    save_attention_visualization,
     save_comparison_grid,
     save_checkpoint,
 )
@@ -40,12 +39,12 @@ CHECKPOINT_EVERY_N_EPOCHS = 5
 # Seed per la riproducibilità
 RANDOM_SEED = 42
 # Pesi per loss - simplified for basic GAN training
-LAMBDA_L1 = 1.0
+LAMBDA_L1 = 0.2
 LAMBDA_PERCEPTUAL = 0.0
 LAMBDA_SSIM = 0.0
 LAMBDA_SOBEL = 0.0
 LAMBDA_CLIP = 0.0
-LAMBDA_ADV = 0.0
+LAMBDA_ADV = 1.0
 
 
 # --- Setup del Dispositivo ---
