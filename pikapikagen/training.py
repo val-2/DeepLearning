@@ -45,8 +45,8 @@ LAMBDA_SSIM = 0.0
 LAMBDA_SOBEL = 0.0
 LAMBDA_CLIP = 0.0
 LAMBDA_ADV = 1.0
-# Parametri per ADA e R1 rimossi
 
+ADAM_BETAS = (0.5, 0.99)
 
 # --- Setup del Dispositivo ---
 if torch.cuda.is_available():
@@ -315,7 +315,7 @@ def fit(
     )
     model_D = PikaPikaDisc().to(DEVICE)
     # Usa la nuova pipeline di augmentation, più stabile per l'inizio del training
-    augment_pipe = GeometricAugmentPipe(p=0.8)
+    augment_pipe = GeometricAugmentPipe(p=0.0)
 
     # --- Supporto Multi-GPU ---
     if use_multi_gpu and torch.cuda.device_count() > 1:
@@ -328,10 +328,10 @@ def fit(
         )
 
     optimizer_G = optim.Adam(
-        model_G.parameters(), lr=LEARNING_RATE_G, betas=(0.5, 0.99)
+        model_G.parameters(), lr=LEARNING_RATE_G, betas=ADAM_BETAS
     )
     optimizer_D = optim.Adam(
-        model_D.parameters(), lr=LEARNING_RATE_D, betas=(0.5, 0.99)
+        model_D.parameters(), lr=LEARNING_RATE_D, betas=ADAM_BETAS
     )
 
     # Loss ausiliarie per il generatore
