@@ -97,7 +97,7 @@ class DecoderBlock(nn.Module):
         self.upsample_block = nn.Sequential(
             nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1, bias=False),
             nn.GroupNorm(1, out_channels), # Equivalente a LayerNorm per feature map (N, C, H, W)
-            nn.ReLU(inplace=True)
+            nn.LeakyReLU(inplace=True)
         )
 
     def forward(self, x, encoder_output=None, attention_mask=None):
@@ -139,29 +139,33 @@ class ImageDecoder(nn.Module):
         )
 
         # Proiezione lineare iniziale a una feature map 2x2.
-        self.initial_projection = nn.Linear(noise_dim + text_embed_dim, 256 * 2 * 2)
+        self.initial_projection = nn.Sequential(
+            nn.Linear(noise_dim + text_embed_dim, 256 * 2 * 2),
+            nn.GroupNorm(1, 256 * 2 * 2),
+            nn.LeakyReLU(inplace=True)
+        )
 
         # Blocchi del decoder basati su GeneratorBlock
         self.blocks = nn.ModuleList([
             # Input: (B, 256, 2, 2)   -> Output: (B, 256, 4, 4)
+            DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
+            # Input: (B, 256, 4, 4)   -> Output: (B, 128, 8, 8)
             DecoderBlock(in_channels=256, out_channels=256, use_attention=False),
-            # Input: (B, 256, 4, 4)   -> Output: (B, 256, 8, 8)
-            DecoderBlock(in_channels=256, out_channels=256, use_attention=False),
-            # Input: (B, 256, 8, 8)   -> Output: (B, 256, 16, 16)
-            DecoderBlock(in_channels=256, out_channels=256, use_attention=False),
-            # Input: (B, 256, 16, 16)  -> Output: (B, 256, 32, 32)
-            DecoderBlock(in_channels=256, out_channels=256, use_attention=False),
-            # Input: (B, 256, 32, 32)  -> Output: (B, 128, 64, 64)
+            # Input: (B, 128, 8, 8)   -> Output: (B, 64, 16, 16)
             DecoderBlock(in_channels=256, out_channels=128, use_attention=False),
-            # Input: (B, 128, 64, 64)  -> Output: (B, 64, 128, 128)
+            # Input: (B, 128, 16, 16)  -> Output: (B, 64, 32, 32)
             DecoderBlock(in_channels=128, out_channels=64, use_attention=False),
-            # Input: (B, 64, 128, 128) -> Output: (B, 32, 256, 256)
+            # Input: (B, 32, 32, 32)  -> Output: (B, 16, 64, 64)
             DecoderBlock(in_channels=64, out_channels=32, use_attention=False),
+            # Input: (B, 16, 64, 64)  -> Output: (B, 8, 128, 128)
+            DecoderBlock(in_channels=16, out_channels=16, use_attention=False),
+            # Input: (B, 8, 128, 128) -> Output: (B, 4, 256, 256)
+            DecoderBlock(in_channels=16, out_channels=16, use_attention=False),
         ])
 
         # Layer finale per portare ai canali RGB
         # Input: (B, 32, 256, 256) -> Output: (B, 3, 256, 256)
-        self.final_conv = nn.Conv2d(32, final_image_channels, kernel_size=3, padding=1)
+        self.final_conv = nn.Conv2d(16, final_image_channels, kernel_size=3, padding=1)
         self.final_activation = nn.Tanh()
 
     def forward(self, noise, encoder_output_full, attention_mask):
