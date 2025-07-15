@@ -5,34 +5,25 @@ from transformers import AutoModel
 class TextEncoder(nn.Module):
     """
     Encoder per processare il testo.
-    Usa gli embedding di bert-mini e li fa passare in un Transformer.
+    Usa il modello bert-mini completo per ottenere le rappresentazioni del testo.
     """
-    def __init__(self, model_name="prajjwal1/bert-mini", fine_tune_embeddings=True):
+    def __init__(self, model_name="prajjwal1/bert-mini", fine_tune_encoder=True):
         super().__init__()
-        # Carica il modello bert-mini pre-addestrato per estrarre gli embedding
-        bert_mini_model = AutoModel.from_pretrained(model_name)
+        # Carica il modello bert-mini pre-addestrato
+        self.bert = AutoModel.from_pretrained(model_name)
 
-        # Estrae lo strato di embedding
-        self.embedding = bert_mini_model.embeddings
+        # Imposta se fare il fine-tuning dell'encoder durante il training
+        for param in self.bert.parameters():
+            param.requires_grad = fine_tune_encoder
 
-        # Imposta se fare il fine-tuning degli embedding durante il training
-        for param in self.embedding.parameters():
-            param.requires_grad = fine_tune_embeddings
+    def forward(self, token_ids, attention_mask):
+        # 1. Ottieni gli output dal modello BERT
+        # L'output contiene last_hidden_state, pooler_output, etc.
+        outputs = self.bert(input_ids=token_ids, attention_mask=attention_mask)
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=256, nhead=4, dim_feedforward=1024, batch_first=True
-        )
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=4)
-
-    def forward(self, token_ids):
-        # 1. Ottieni gli embedding dai token ID
-        # Shape: (batch_size, seq_len) -> (batch_size, seq_len, embedding_dim)
-        embedded_text = self.embedding(token_ids)
-
-        # 2. Passa gli embedding attraverso il Transformer Encoder
-        # Shape: (batch_size, seq_len, embedding_dim) -> (batch_size, seq_len, embedding_dim)
-        encoder_output = self.transformer_encoder(embedded_text)
-        return encoder_output
+        # 2. Restituisci l'ultimo strato nascosto
+        # Shape: (batch_size, seq_len, embedding_dim)
+        return outputs.last_hidden_state
 
 
 class ImageCrossAttention(nn.Module):
@@ -232,11 +223,11 @@ class PikaPikaGen(nn.Module):
     """
     Modello completo che unisce Encoder e Decoder.
     """
-    def __init__(self, text_encoder_model_name="prajjwal1/bert-mini", noise_dim=100, fine_tune_embeddings=True):
+    def __init__(self, text_encoder_model_name="prajjwal1/bert-mini", noise_dim=100, fine_tune_text_encoder=True):
         super().__init__()
         self.text_encoder = TextEncoder(
             model_name=text_encoder_model_name,
-            fine_tune_embeddings=fine_tune_embeddings
+            fine_tune_encoder=fine_tune_text_encoder
         )
 
         text_embed_dim = 256
@@ -258,7 +249,7 @@ class PikaPikaGen(nn.Module):
 
         # 1. Codifica il testo per ottenere i vettori di ogni parola
         # encoder_output.shape: (batch_size, seq_len, text_embed_dim)
-        encoder_output = self.text_encoder(token_ids)
+        encoder_output = self.text_encoder(token_ids, attention_mask=attention_mask)
 
         # 2. Genera l'immagine usando l'output completo dell'encoder
         #    Il decoder calcolerà internamente sia il contesto iniziale (ATTENZIONE #1)

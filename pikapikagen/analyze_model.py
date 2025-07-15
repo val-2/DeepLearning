@@ -60,13 +60,11 @@ def main():
     # Impostazioni coerenti con training.py
     model_name = "prajjwal1/bert-mini"
     noise_dim = 100
-    fine_tune_embeddings = True # Come da default nel training
 
     # Istanzia il generatore
     model_G = PikaPikaGen(
         text_encoder_model_name=model_name,
-        noise_dim=noise_dim,
-        fine_tune_embeddings=fine_tune_embeddings
+        noise_dim=noise_dim
     )
 
     # Istanzia il discriminatore

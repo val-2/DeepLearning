@@ -154,7 +154,6 @@ def _initialize_models():
     model_G = PikaPikaGen(
         text_encoder_model_name=MODEL_NAME,
         noise_dim=NOISE_DIM,
-        fine_tune_embeddings=True,
     ).to(DEVICE)
 
     model_D = PikaPikaDisc(img_channels=3).to(DEVICE)
@@ -296,7 +295,7 @@ def _validate_one_epoch(epoch, model_G, model_D, val_loader, criterions):
             real_images = batch["image"].to(DEVICE)
 
             # Calcolo della loss del generatore sul set di validazione
-            encoder_output_g = model_G.text_encoder(token_ids)
+            encoder_output_g = model_G.text_encoder(token_ids, attention_mask=attention_mask)
 
             noise = torch.randn(real_images.size(0), NOISE_DIM, device=DEVICE)
             generated_images, _, _ = model_G.image_decoder(noise, encoder_output_g, attention_mask)
