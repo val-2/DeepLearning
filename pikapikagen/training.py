@@ -40,7 +40,7 @@ CHECKPOINT_EVERY_N_EPOCHS = 5
 # Seed per la riproducibilità
 RANDOM_SEED = 42
 # Pesi per WGAN-GP e loss ausiliarie (disattivate)
-LAMBDA_L1 = 0.0
+LAMBDA_L1 = 0.2
 LAMBDA_PERCEPTUAL = 0.0
 LAMBDA_SSIM = 0.0
 LAMBDA_SOBEL = 0.0
