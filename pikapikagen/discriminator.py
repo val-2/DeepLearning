@@ -25,6 +25,7 @@ class PikaPikaDisc(nn.Module):
             # Input combinato: (features_d*8 + features_d*8) x 16x16
             self._block(in_channels=features_d*16, out_channels=features_d*16, kernel_size=4, stride=2, padding=1, bn=True), # 8x8
             self._block(in_channels=features_d*16, out_channels=features_d*32, kernel_size=4, stride=2, padding=1, bn=True), # 4x4
+            # L'output è un punteggio grezzo, non una probabilità.
             nn.Conv2d(in_channels=features_d*32, out_channels=1, kernel_size=4, stride=1, padding=0) # 1x1
         )
 

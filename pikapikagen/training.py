@@ -9,11 +9,13 @@ from tqdm import tqdm
 import numpy as np
 import torchvision.transforms as T
 
+# Import separati per chiarezza
 from pokemon_dataset import PokemonDataset
 from model import PikaPikaGen
 from discriminator import PikaPikaDisc
 from losses import VGGPerceptualLoss, SSIMLoss, SobelLoss
 from clip_loss import create_clip_loss
+from augment import GeometricAugmentPipe
 from utils import (
     save_plot_losses,
     load_latest_checkpoint,
@@ -27,19 +29,19 @@ from utils import (
 # --- Parametri di Training Fissi ---
 MODEL_NAME = "prajjwal1/bert-mini"
 BATCH_SIZE = 32
-LEARNING_RATE_G = 1e-4  # Più lento per il generatore (TTUR)
-LEARNING_RATE_D = 2e-4  # Più veloce per il discriminatore (TTUR)
+LEARNING_RATE_G = 1e-4
+LEARNING_RATE_C = 2e-4  # Rinominato per chiarezza (Critico)
 NOISE_DIM = 100
 TRAIN_VAL_SPLIT = 0.9
 NUM_WORKERS = 0
-# Numero di campioni da visualizzare nelle griglie di confronto
-NUM_VIZ_SAMPLES = 4
+NUM_VIZ_SAMPLES = 4 # Numero di campioni da visualizzare nelle griglie di confronto
 # Frequenza di salvataggio checkpoint e visualizzazioni
 CHECKPOINT_EVERY_N_EPOCHS = 5
 # Seed per la riproducibilità
 RANDOM_SEED = 42
-# Pesi per le diverse loss ausiliarie del generatore
-LAMBDA_L1 = 0.1  # RE-INTRODOTTO un valore piccolo come ancora
+# Pesi per WGAN-GP e loss ausiliarie (disattivate)
+LAMBDA_GP = 10  # Peso per il Gradient Penalty
+LAMBDA_L1 = 0.0
 LAMBDA_PERCEPTUAL = 0.0
 LAMBDA_SSIM = 0.0
 LAMBDA_SOBEL = 0.0
@@ -69,138 +71,103 @@ print(f"Utilizzo del dispositivo primario: {DEVICE}")
 IMAGE_DIR = os.path.join(OUTPUT_DIR, "images")
 
 
-class GeometricAugmentPipe:
-    """
-    Una pipeline di augmentation più "gentile" che applica solo
-    trasformazioni geometriche. Non eredita da nn.Module per evitare
-    ogni possibile problema con il grafo computazionale.
-    """
-    def __init__(self, p=0.5):
-        self.p = p
-        self.transforms = T.Compose([
-            T.RandomHorizontalFlip(p=0.5),
-            T.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05), fill=1),
-        ])
+def compute_gradient_penalty(critic, real_samples, fake_samples, context_vector, device):
+    """Calcola il gradient penalty per WGAN-GP."""
+    # Campionamento casuale di un punto sulla linea tra un'immagine reale e una finta
+    alpha = torch.randn(real_samples.size(0), 1, 1, 1, device=device)
+    interpolated = (alpha * real_samples + ((1 - alpha) * fake_samples)).requires_grad_(True)
 
-    def __call__(self, images):
-        if self.p > 0 and torch.rand(1).item() < self.p:
-            return self.transforms(images)
-        return images
+    # Calcolo dello score del critico per i campioni interpolati
+    interpolated_scores = critic(interpolated, context_vector)
+
+    # Calcolo dei gradienti dello score rispetto all'input interpolato
+    gradient = torch.autograd.grad(
+        inputs=interpolated,
+        outputs=interpolated_scores,
+        grad_outputs=torch.ones_like(interpolated_scores),
+        create_graph=True,
+        retain_graph=True,
+    )[0]
+
+    gradient = gradient.view(gradient.size(0), -1)
+    gradient_norm = gradient.norm(2, dim=1)
+    gradient_penalty = ((gradient_norm - 1) ** 2).mean()
+    return gradient_penalty
 
 
-def train_discriminator(model_G, model_D, optimizer_D, batch, device, augment_pipe):
-    """Esegue un passo di training per il discriminatore."""
-    optimizer_D.zero_grad()
+def train_critic(model_G, model_C, optimizer_C, batch, device, augment_pipe):
+    """Esegue un passo di training per il Critico (ex-Discriminatore)."""
+    optimizer_C.zero_grad()
 
     token_ids = batch["text"].to(device)
     attention_mask = batch["attention_mask"].to(device)
     real_images = batch["image"].to(device)
 
-    # Il testo viene processato una sola volta con il text_encoder del generatore.
-    # Non calcoliamo i gradienti rispetto al generatore in questa fase.
     with torch.no_grad():
-        model_to_use_G = (
-            model_G.module if isinstance(model_G, nn.DataParallel) else model_G
-        )
+        model_to_use_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
         encoder_output = model_to_use_G.text_encoder(token_ids)
-        attention_weights = model_to_use_G.image_decoder.initial_context_attention(
-            encoder_output
-        )
+        attention_weights = model_to_use_G.image_decoder.initial_context_attention(encoder_output)
         context_vector = torch.sum(attention_weights * encoder_output, dim=1)
 
-    # --- Predizioni su immagini reali ---
+    # --- Score su immagini reali ---
     real_images_aug = augment_pipe(real_images)
-    d_real_pred = model_D(real_images_aug, context_vector)
-    loss_d_real = F.softplus(-d_real_pred).mean()
+    c_real_pred = model_C(real_images_aug, context_vector)
 
-    # --- Predizioni su immagini generate ---
+    # --- Score su immagini generate ---
     with torch.no_grad():
         noise = torch.randn(real_images.size(0), NOISE_DIM, device=device)
-        fake_images = model_to_use_G.image_decoder(
-            noise, encoder_output, attention_mask
-        )[0]
-        # Applico l'augmentation QUI, dentro no_grad, per rompere
-        # ogni possibile collegamento con il grafo del generatore.
+        fake_images = model_to_use_G.image_decoder(noise, encoder_output, attention_mask)[0]
         fake_images_aug = augment_pipe(fake_images)
 
-    d_fake_pred = model_D(fake_images_aug, context_vector)
-    loss_d_fake = F.softplus(d_fake_pred).mean()
+    c_fake_pred = model_C(fake_images_aug, context_vector)
 
-    # Loss totale del discriminatore
-    loss_D = loss_d_real + loss_d_fake
-    loss_D.backward()
-    optimizer_D.step()
+    # --- Calcolo Loss WGAN-GP ---
+    # La loss del critico vuole massimizzare (real - fake)
+    loss_c_adv = c_fake_pred.mean() - c_real_pred.mean()
 
-    return loss_D.item()
+    # Calcolo del gradient penalty
+    gradient_penalty = compute_gradient_penalty(model_C, real_images, fake_images, context_vector, device)
+
+    # Loss totale del Critico
+    loss_C = loss_c_adv + LAMBDA_GP * gradient_penalty
+    loss_C.backward()
+    optimizer_C.step()
+
+    return {"C_loss": loss_C.item(), "GP": gradient_penalty.item()}
 
 
-def train_generator(model_G, model_D, optimizer_G, batch, criterions, device):
-    """Esegue un passo di training per il generatore."""
+def train_generator(model_G, model_C, optimizer_G, batch, criterions, device):
+    """Esegue un passo di training per il generatore con loss WGAN."""
     optimizer_G.zero_grad()
 
     token_ids = batch["text"].to(device)
     attention_mask = batch["attention_mask"].to(device)
     real_images = batch["image"].to(device)
 
-    # Dobbiamo ricalcolare l'output dell'encoder per far fluire i gradienti
-    # attraverso il generatore e il text encoder.
     model_to_use_G = model_G.module if isinstance(model_G, nn.DataParallel) else model_G
     encoder_output_g = model_to_use_G.text_encoder(token_ids)
-    attention_weights_g = model_to_use_G.image_decoder.initial_context_attention(
-        encoder_output_g
-    )
+    attention_weights_g = model_to_use_G.image_decoder.initial_context_attention(encoder_output_g)
     context_vector_g = torch.sum(attention_weights_g * encoder_output_g, dim=1)
 
     noise = torch.randn(real_images.size(0), NOISE_DIM, device=device)
-    generated_images, _, _ = model_to_use_G.image_decoder(
-        noise, encoder_output_g, attention_mask
-    )
-    g_pred = model_D(generated_images, context_vector_g)
+    generated_images, _, _ = model_to_use_G.image_decoder(noise, encoder_output_g, attention_mask)
 
-    # Loss GAN per il generatore
-    loss_g_gan = F.softplus(-g_pred).mean()
+    # Score del critico sulle immagini generate
+    g_pred = model_C(generated_images, context_vector_g)
 
-    # Loss ausiliarie (pixel-wise)
-    loss_l1 = (
-        criterions["l1"](generated_images, real_images)
-        if LAMBDA_L1 > 0
-        else torch.tensor(0.0, device=device)
-    )
-    loss_perceptual = (
-        criterions["perceptual"](generated_images, real_images)
-        if LAMBDA_PERCEPTUAL > 0
-        else torch.tensor(0.0, device=device)
-    )
-    loss_ssim = (
-        criterions["ssim"](generated_images, real_images)
-        if LAMBDA_SSIM > 0
-        else torch.tensor(0.0, device=device)
-    )
-    loss_sobel = (
-        criterions["sobel"](generated_images, real_images)
-        if LAMBDA_SOBEL > 0
-        else torch.tensor(0.0, device=device)
-    )
-    loss_clip = (
-        criterions["clip"](generated_images, batch["description"])
-        if criterions["clip"] is not None
-        else torch.tensor(0.0, device=device)
-    )
+    # Loss WGAN per il generatore: vuole massimizzare lo score del critico
+    loss_g_gan = -g_pred.mean()
+
+    # Loss ausiliarie (attualmente disattivate tramite lambda)
+    loss_l1 = criterions["l1"](generated_images, real_images) if LAMBDA_L1 > 0 else torch.tensor(0.0, device=device)
+    loss_perceptual = criterions["perceptual"](generated_images, real_images) if LAMBDA_PERCEPTUAL > 0 else torch.tensor(0.0, device=device)
+    loss_ssim = criterions["ssim"](generated_images, real_images) if LAMBDA_SSIM > 0 else torch.tensor(0.0, device=device)
+    loss_sobel = criterions["sobel"](generated_images, real_images) if LAMBDA_SOBEL > 0 else torch.tensor(0.0, device=device)
+    loss_clip = criterions["clip"](generated_images, batch["description"]) if criterions["clip"] is not None else torch.tensor(0.0, device=device)
 
     # Loss totale del generatore
-    loss_G = (
-        LAMBDA_ADV * loss_g_gan
-        + LAMBDA_L1 * loss_l1
-        + LAMBDA_PERCEPTUAL * loss_perceptual
-        + LAMBDA_SSIM * loss_ssim
-        + LAMBDA_SOBEL * loss_sobel
-        + LAMBDA_CLIP * loss_clip
-    )
+    loss_G = loss_g_gan + LAMBDA_L1 * loss_l1 + LAMBDA_PERCEPTUAL * loss_perceptual + LAMBDA_SSIM * loss_ssim + LAMBDA_SOBEL * loss_sobel + LAMBDA_CLIP * loss_clip
     loss_G.backward()
-
-    # RE-INTRODOTTO: È la valvola di sicurezza essenziale contro l'esplosione dei gradienti.
-    # torch.nn.utils.clip_grad_norm_(model_G.parameters(), 1.0)
-
     optimizer_G.step()
 
     # Dizionario delle loss per il logging
@@ -230,7 +197,7 @@ def fit(
     """
     Funzione principale per l'addestramento e la validazione del modello PikaPikaGen.
     """
-    print("--- Impostazioni di Training ---")
+    print("--- Impostazioni di Training con WGAN-GP ---")
     print(f"Utilizzo del dispositivo: {DEVICE}")
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
@@ -308,15 +275,15 @@ def fit(
     model_G = PikaPikaGen(text_encoder_model_name=MODEL_NAME, noise_dim=NOISE_DIM).to(
         DEVICE
     )
-    model_D = PikaPikaDisc().to(DEVICE)
-    # Usa la nuova pipeline di augmentation, più stabile per l'inizio del training
-    augment_pipe = GeometricAugmentPipe(p=0.8)
+    model_C = PikaPikaDisc().to(DEVICE) # Ora è un Critico
+    # Augmentation disabilitata (p=0) per isolare l'effetto di WGAN-GP
+    augment_pipe = GeometricAugmentPipe(p=0.0)
 
     # --- Supporto Multi-GPU ---
     if use_multi_gpu and torch.cuda.device_count() > 1:
         print(f"Utilizzo di {torch.cuda.device_count()} GPU con nn.DataParallel.")
         model_G = nn.DataParallel(model_G)
-        model_D = nn.DataParallel(model_D)
+        model_C = nn.DataParallel(model_C)
     elif use_multi_gpu and torch.cuda.device_count() <= 1:
         print(
             "Multi-GPU richiesto ma solo una o nessuna GPU disponibile. Proseguo con una singola GPU/CPU."
@@ -325,8 +292,8 @@ def fit(
     optimizer_G = optim.Adam(
         model_G.parameters(), lr=LEARNING_RATE_G, betas=(0.5, 0.99)
     )
-    optimizer_D = optim.Adam(
-        model_D.parameters(), lr=LEARNING_RATE_D, betas=(0.5, 0.99)
+    optimizer_C = optim.Adam(
+        model_C.parameters(), lr=LEARNING_RATE_C, betas=(0.5, 0.99)
     )
 
     # Loss ausiliarie per il generatore
@@ -350,17 +317,19 @@ def fit(
         checkpoint = load_latest_checkpoint(CHECKPOINT_DIR, DEVICE)
         if checkpoint:
             try:
+                # Carica Generatore
                 model_to_load_G = (
                     model_G.module if isinstance(model_G, nn.DataParallel) else model_G
                 )
                 model_to_load_G.load_state_dict(checkpoint["model_G_state_dict"])
                 optimizer_G.load_state_dict(checkpoint["optimizer_G_state_dict"])
 
-                model_to_load_D = (
-                    model_D.module if isinstance(model_D, nn.DataParallel) else model_D
+                # Carica Critico
+                model_to_load_C = (
+                    model_C.module if isinstance(model_C, nn.DataParallel) else model_C
                 )
-                model_to_load_D.load_state_dict(checkpoint["model_D_state_dict"])
-                optimizer_D.load_state_dict(checkpoint["optimizer_D_state_dict"])
+                model_to_load_C.load_state_dict(checkpoint["model_C_state_dict"]) # AGGIORNATO
+                optimizer_C.load_state_dict(checkpoint["optimizer_C_state_dict"]) # AGGIORNATO
 
                 start_epoch = checkpoint["epoch"] + 1
                 best_val_loss = checkpoint.get("best_val_loss", float("inf"))
@@ -386,37 +355,37 @@ def fit(
 
     for epoch in range(start_epoch, final_epoch + 1):
         model_G.train()
-        model_D.train()
+        model_C.train()
 
         epoch_losses_g = []
-        epoch_losses_d = []
+        epoch_losses_c = []
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{final_epoch} [Training]")
         for i, batch in enumerate(pbar):
-            # --- Fase 1: Training del Discriminatore ---
-            loss_D = train_discriminator(
-                model_G, model_D, optimizer_D, batch, DEVICE, augment_pipe
-            )
+            # --- Fase 1: Training del Critico ---
+            c_losses = train_critic(model_G, model_C, optimizer_C, batch, DEVICE, augment_pipe)
 
             # --- Fase 2: Training del Generatore ---
-            g_losses = train_generator(
-                model_G, model_D, optimizer_G, batch, criterions, DEVICE
-            )
+            # WGAN fa più step per il critico, ma iniziamo con 1:1
+            g_losses = train_generator(model_G, model_C, optimizer_G, batch, criterions, DEVICE)
 
-            epoch_losses_d.append(loss_D)
+            epoch_losses_c.append(c_losses["C_loss"])
             epoch_losses_g.append(g_losses["G_total"])
 
-            postfix_dict = {"D_loss": f"{loss_D:.3f}"}
-            postfix_dict.update({k: f"{v:.3f}" for k, v in g_losses.items()})
+            postfix_dict = {
+                "C_loss": f"{c_losses['C_loss']:.3f}",
+                "GP": f"{c_losses['GP']:.3f}",
+                "G_loss": f"{g_losses['G_total']:.3f}"
+            }
             pbar.set_postfix(postfix_dict)
 
         # Salva la media delle loss per l'epoca corrente
-        losses_D_hist.append(np.mean(epoch_losses_d))
+        losses_D_hist.append(np.mean(epoch_losses_c)) # Aggiornato per salvare loss del critico
         losses_G_hist.append(np.mean(epoch_losses_g))
 
         # --- Fine Epoch: Validazione e Visualizzazione ---
         model_G.eval()
-        model_D.eval()
+        model_C.eval()
 
         val_losses = {}
         with torch.no_grad():
@@ -444,8 +413,8 @@ def fit(
                 )
 
                 # Calcolo di tutte le loss del generatore
-                g_pred = model_D(generated_images, context_vector_g)
-                loss_g_gan = F.softplus(-g_pred).mean()
+                g_pred = model_C(generated_images, context_vector_g)
+                loss_g_gan = -g_pred.mean()
                 loss_l1 = criterions["l1"](generated_images, real_images)
                 loss_perceptual = criterions["perceptual"](
                     generated_images, real_images
@@ -547,8 +516,8 @@ def fit(
                 epoch,
                 model_G,
                 optimizer_G,
-                model_D,
-                optimizer_D,
+                model_C, # AGGIORNATO
+                optimizer_C, # AGGIORNATO
                 best_val_loss,
                 avg_val_losses,
                 losses_G_hist,
