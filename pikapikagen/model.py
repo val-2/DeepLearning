@@ -138,33 +138,31 @@ class ImageDecoder(nn.Module):
             # Il Softmax viene applicato nel forward pass per poter usare la maschera
         )
 
-        # Proiezione lineare iniziale a una feature map 2x2.
+        # Proiezione lineare iniziale a una feature map 4x4.
         self.initial_projection = nn.Sequential(
-            nn.Linear(noise_dim + text_embed_dim, 256 * 2 * 2),
-            nn.GroupNorm(1, 256 * 2 * 2),
+            nn.Linear(noise_dim + text_embed_dim, 256 * 4 * 4),
+            nn.GroupNorm(1, 256 * 4 * 4),
             nn.LeakyReLU(inplace=True)
         )
 
         # Blocchi del decoder basati su GeneratorBlock
         self.blocks = nn.ModuleList([
-            # Input: (B, 256, 2, 2)   -> Output: (B, 256, 4, 4)
-            DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
-            # Input: (B, 256, 4, 4)   -> Output: (B, 128, 8, 8)
+            # Input: (B, 256, 4, 4)   -> Output: (B, 256, 8, 8)
             DecoderBlock(in_channels=256, out_channels=256, use_attention=False),
-            # Input: (B, 128, 8, 8)   -> Output: (B, 64, 16, 16)
+            # Input: (B, 256, 8, 8)   -> Output: (B, 256, 16, 16)
+            DecoderBlock(in_channels=256, out_channels=256, use_attention=False),
+            # Input: (B, 256, 16, 16)  -> Output: (B, 128, 32, 32)
             DecoderBlock(in_channels=256, out_channels=128, use_attention=False),
-            # Input: (B, 128, 16, 16)  -> Output: (B, 64, 32, 32)
+            # Input: (B, 128, 32, 32)  -> Output: (B, 64, 64, 64)
             DecoderBlock(in_channels=128, out_channels=64, use_attention=False),
-            # Input: (B, 32, 32, 32)  -> Output: (B, 16, 64, 64)
+            # Input: (B, 64, 64, 64)  -> Output: (B, 32, 128, 128)
             DecoderBlock(in_channels=64, out_channels=32, use_attention=False),
-            # Input: (B, 16, 64, 64)  -> Output: (B, 8, 128, 128)
-            DecoderBlock(in_channels=16, out_channels=16, use_attention=False),
-            # Input: (B, 8, 128, 128) -> Output: (B, 4, 256, 256)
-            DecoderBlock(in_channels=16, out_channels=16, use_attention=False),
+            # Input: (B, 32, 128, 128) -> Output: (B, 16, 256, 256)
+            DecoderBlock(in_channels=32, out_channels=16, use_attention=False),
         ])
 
         # Layer finale per portare ai canali RGB
-        # Input: (B, 32, 256, 256) -> Output: (B, 3, 256, 256)
+        # Input: (B, 16, 256, 256) -> Output: (B, 3, 256, 256)
         self.final_conv = nn.Conv2d(16, final_image_channels, kernel_size=3, padding=1)
         self.final_activation = nn.Tanh()
 
