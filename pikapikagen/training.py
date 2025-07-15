@@ -18,7 +18,7 @@ from clip_loss import create_clip_loss
 from augment import GeometricAugmentPipe
 from utils import (
     save_plot_losses,
-    load_latest_checkpoint,
+    find_sorted_checkpoints,  # Sostituito load_latest_checkpoint
     CHECKPOINT_DIR,
     OUTPUT_DIR,
     save_attention_visualization,
@@ -314,36 +314,55 @@ def fit(
 
     # --- Logica per continuare il training ---
     if continue_from_last_checkpoint:
-        checkpoint = load_latest_checkpoint(CHECKPOINT_DIR, DEVICE)
-        if checkpoint:
-            try:
-                # Carica Generatore
-                model_to_load_G = (
-                    model_G.module if isinstance(model_G, nn.DataParallel) else model_G
-                )
-                model_to_load_G.load_state_dict(checkpoint["model_G_state_dict"])
-                optimizer_G.load_state_dict(checkpoint["optimizer_G_state_dict"])
+        sorted_checkpoints = find_sorted_checkpoints(CHECKPOINT_DIR)
+        checkpoint_loaded = False
+        if sorted_checkpoints:
+            for checkpoint_path in sorted_checkpoints:
+                try:
+                    print(
+                        f"--- Tentativo di caricamento dal checkpoint: {os.path.basename(checkpoint_path)} ---"
+                    )
+                    checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
 
-                # Carica Critico
-                model_to_load_C = (
-                    model_C.module if isinstance(model_C, nn.DataParallel) else model_C
-                )
-                model_to_load_C.load_state_dict(checkpoint["model_C_state_dict"]) # AGGIORNATO
-                optimizer_C.load_state_dict(checkpoint["optimizer_C_state_dict"]) # AGGIORNATO
+                    # Carica Generatore
+                    model_to_load_G = (
+                        model_G.module
+                        if isinstance(model_G, nn.DataParallel)
+                        else model_G
+                    )
+                    model_to_load_G.load_state_dict(checkpoint["model_G_state_dict"])
+                    optimizer_G.load_state_dict(checkpoint["optimizer_G_state_dict"])
 
-                start_epoch = checkpoint["epoch"] + 1
-                best_val_loss = checkpoint.get("best_val_loss", float("inf"))
-                losses_G_hist = checkpoint.get("losses_G_hist", [])
-                losses_D_hist = checkpoint.get("losses_D_hist", [])
-                print(f"Checkpoint caricato. Si riparte dall'epoca {start_epoch}.")
-            except Exception as e:
-                print(f"Errore nell'applicare i dati del checkpoint: {e}")
-                print("Inizio un nuovo training da zero.")
-                start_epoch = 1
-                best_val_loss = float("inf")
-        else:
+                    # Carica Critico
+                    model_to_load_C = (
+                        model_C.module
+                        if isinstance(model_C, nn.DataParallel)
+                        else model_C
+                    )
+                    model_to_load_C.load_state_dict(checkpoint["model_C_state_dict"])
+                    optimizer_C.load_state_dict(checkpoint["optimizer_C_state_dict"])
+
+                    start_epoch = checkpoint["epoch"] + 1
+                    best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+                    losses_G_hist = checkpoint.get("losses_G_hist", [])
+                    losses_D_hist = checkpoint.get("losses_D_hist", [])
+
+                    print(
+                        f"Checkpoint caricato con successo da {os.path.basename(checkpoint_path)}. Si riparte dall'epoca {start_epoch}."
+                    )
+                    checkpoint_loaded = True
+                    break  # Esci dal ciclo se il caricamento ha successo
+                except Exception as e:
+                    print(
+                        f"Errore nel caricare o applicare il checkpoint {os.path.basename(checkpoint_path)}: {e}"
+                    )
+                    print(
+                        "File corrotto o incompatibile. Tento con il checkpoint precedente, se disponibile."
+                    )
+
+        if not checkpoint_loaded:
             print(
-                "--- Nessun checkpoint valido trovato. Inizio un nuovo training da zero. ---"
+                "--- Nessun checkpoint valido trovato o applicabile. Inizio un nuovo training da zero. ---"
             )
     else:
         print(
@@ -503,7 +522,7 @@ def fit(
             "val",
             DEVICE,
             IMAGE_DIR,
-            show_inline=show_images_inline,
+            show_inline=False,
         )
 
         # --- Salvataggio Checkpoint (ogni N epoche) ---
