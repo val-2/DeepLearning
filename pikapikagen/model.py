@@ -146,9 +146,9 @@ class ImageDecoder(nn.Module):
             # Input: (B, 256, 2, 2)   -> Output: (B, 256, 4, 4)
             DecoderBlock(in_channels=256, out_channels=256, use_attention=False),
             # Input: (B, 256, 4, 4)   -> Output: (B, 256, 8, 8)
-            DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
+            DecoderBlock(in_channels=256, out_channels=256, use_attention=False),
             # Input: (B, 256, 8, 8)   -> Output: (B, 256, 16, 16)
-            DecoderBlock(in_channels=256, out_channels=256, use_attention=True),
+            DecoderBlock(in_channels=256, out_channels=256, use_attention=False),
             # Input: (B, 256, 16, 16)  -> Output: (B, 256, 32, 32)
             DecoderBlock(in_channels=256, out_channels=256, use_attention=False),
             # Input: (B, 256, 32, 32)  -> Output: (B, 128, 64, 64)
