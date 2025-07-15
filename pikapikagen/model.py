@@ -234,11 +234,10 @@ class PikaPikaGen(nn.Module):
     """
     Modello completo che unisce Encoder e Decoder.
     """
-    def __init__(self, text_encoder_model_name="prajjwal1/bert-mini", noise_dim=100, fine_tune_text_encoder=True):
+    def __init__(self, text_encoder_model_name="prajjwal1/bert-mini", noise_dim=100):
         super().__init__()
         self.text_encoder = TextEncoder(
             model_name=text_encoder_model_name,
-            fine_tune_encoder=fine_tune_text_encoder
         )
 
         text_embed_dim = 256
