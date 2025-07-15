@@ -29,7 +29,7 @@ from utils import (
 MODEL_NAME = "prajjwal1/bert-mini"
 BATCH_SIZE = 64
 LEARNING_RATE_G = 2e-4
-LEARNING_RATE_D = 2e-4
+LEARNING_RATE_D = 1e-4
 NOISE_DIM = 100
 TRAIN_VAL_SPLIT = 0.9
 NUM_WORKERS = 0
@@ -39,12 +39,12 @@ CHECKPOINT_EVERY_N_EPOCHS = 5
 # Seed per la riproducibilità
 RANDOM_SEED = 42
 # Pesi per loss - simplified for basic GAN training
-LAMBDA_L1 = 0.2
+LAMBDA_L1 = 1.0
 LAMBDA_PERCEPTUAL = 0.0
 LAMBDA_SSIM = 0.0
 LAMBDA_SOBEL = 0.0
 LAMBDA_CLIP = 0.0
-LAMBDA_ADV = 1.0
+LAMBDA_ADV = 0.0
 
 
 # --- Setup del Dispositivo ---
