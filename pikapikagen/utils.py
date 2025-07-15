@@ -98,13 +98,9 @@ def save_checkpoint(
     """
     state = {
         "epoch": epoch,
-        "model_G_state_dict": model_G.module.state_dict()
-        if isinstance(model_G, nn.DataParallel)
-        else model_G.state_dict(),
+        "generator_state_dict": model_G.state_dict(),
         "optimizer_G_state_dict": optimizer_G.state_dict(),
-        "model_D_state_dict": model_D.module.state_dict()
-        if isinstance(model_D, nn.DataParallel)
-        else model_D.state_dict(),
+        "discriminator_state_dict": model_D.state_dict(),
         "optimizer_D_state_dict": optimizer_D.state_dict(),
         "best_val_loss": best_val_loss,
         "current_val_losses": current_val_losses,
