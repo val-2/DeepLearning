@@ -14,7 +14,7 @@ class GeometricAugmentPipe:
             T.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05), fill=1),
         ])
 
-    def __call__(self, images):
+    def apply(self, images):
         if self.p > 0 and torch.rand(1).item() < self.p:
             return self.transforms(images)
         return images
