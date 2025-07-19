@@ -1,344 +1,174 @@
-from sentence_transformers import SentenceTransformer
-from sentence_transformers.models import CLIPModel
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Union, List
-import torchvision.transforms as transforms
-from PIL import Image
-import numpy as np
+from typing import List, Union
+from transformers import CLIPModel, CLIPProcessor
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import List
+from transformers import CLIPModel, CLIPProcessor
+import torchvision.transforms as transforms # <-- Importiamo torchvision
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import List
+from transformers import CLIPModel, CLIPProcessor
+import torchvision.transforms as transforms # <-- Importiamo torchvision
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import List
+from transformers import CLIPModel, CLIPProcessor
+import torchvision.transforms as transforms
 
 class CLIPLoss(nn.Module):
     """
-    CLIP (Contrastive Language-Image Pre-training) Loss implementation using SentenceTransformer.
-
-    This loss function computes the contrastive loss between image and text embeddings,
-    encouraging the model to generate images that are semantically aligned with their
-    corresponding text descriptions.
-
-    The loss is computed as the sum of:
-    1. Image-to-text contrastive loss (how well generated images match their text descriptions)
-    2. Text-to-image contrastive loss (symmetric loss for better alignment)
+    CLIP Loss using Hugging Face transformers, designed to be fully differentiable for GAN training.
+    This version uses the most robust method for gradient propagation.
     """
 
     def __init__(
         self,
-        model_name: str = "clip-ViT-B-32",
-        temperature: float = 0.07,
-        device: Optional[str] = None,
-        normalize_embeddings: bool = True
+        model_name: str = "openai/clip-vit-base-patch32",
+        device: str = None,
     ):
-        """
-        Initialize CLIP loss.
+        super().__init__()
 
-        Args:
-            model_name: Name of the SentenceTransformer model to use for encoding
-            temperature: Temperature parameter for scaling the logits
-            device: Device to run the model on (auto-detected if None)
-            normalize_embeddings: Whether to L2 normalize embeddings before computing similarity
-        """
-        super(CLIPLoss, self).__init__()
-
-        # Initialize the sentence transformer model
-        self.model = SentenceTransformer(model_name)
         if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = self.model.to(device)
-        self.device = device
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device
 
-        # Temperature parameter for contrastive learning
-        self.temperature = temperature
-        self.normalize_embeddings = normalize_embeddings
+        self.model = CLIPModel.from_pretrained(model_name).to(self.device)
+        self.processor = CLIPProcessor.from_pretrained(model_name)
 
-        # Image preprocessing for the CLIP model
-        # Images should be in range [0, 1] and normalized with ImageNet stats
+        # Congeliamo il modello CLIP
+        for param in self.model.parameters():
+            param.requires_grad = False
+        self.model.eval()
+
+        # Pipeline di trasformazione differenziabile per le immagini
+        vision_config = self.model.config.vision_config
         self.image_transform = transforms.Compose([
-            transforms.Resize((224, 224)),  # CLIP typically uses 224x224 images
+            transforms.Resize(
+                (vision_config.image_size, vision_config.image_size),
+                interpolation=transforms.InterpolationMode.BICUBIC,
+                antialias=True
+            ),
             transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
+                mean=self.processor.image_processor.image_mean,
+                std=self.processor.image_processor.image_std
+            ),
         ])
-
-    def preprocess_images(self, images: torch.Tensor) -> torch.Tensor:
-        """
-        Preprocess images for CLIP encoding.
-
-        Args:
-            images: Tensor of shape [B, C, H, W] in range [-1, 1] or [0, 1]
-
-        Returns:
-            Preprocessed images ready for CLIP encoding
-        """
-        # Convert from [-1, 1] to [0, 1] if needed
-        if images.min() < 0:
-            images = (images + 1.0) / 2.0
-
-        # Apply CLIP preprocessing
-        batch_size = images.shape[0]
-        processed_images = []
-
-        for i in range(batch_size):
-            img = images[i]
-            img = self.image_transform(img)
-            processed_images.append(img)
-
-        return torch.stack(processed_images, dim=0)
-
-    def encode_images(self, images: torch.Tensor) -> torch.Tensor:
-        """
-        Encode images using the CLIP model's vision transformer directly to preserve the computation graph.
-
-        Args:
-            images: Tensor of shape [B, C, H, W]
-
-        Returns:
-            Image embeddings of shape [B, embedding_dim] with gradients attached.
-        """
-        # Preprocess images for the CLIP model
-        processed_images = self.preprocess_images(images)
-
-        # Access the underlying HuggingFace CLIP model from the SentenceTransformer wrapper.
-        # self.model is the SentenceTransformer, self.model[0] is the CLIPModel module,
-        # and self.model[0].model is the actual HuggingFace transformers.CLIPModel.
-        # This allows us to call the vision encoder directly and keep the computation graph.
-        clip_module: CLIPModel = self.model[0] # type: ignore
-        image_embeddings = clip_module.model.get_image_features(pixel_values=processed_images) # type: ignore
-
-        return image_embeddings
-
-    def encode_texts(self, texts: List[str]) -> torch.Tensor:
-        """
-        Encode text descriptions using the CLIP model.
-
-        Args:
-            texts: List of text descriptions
-
-        Returns:
-            Text embeddings of shape [B, embedding_dim]
-        """
-        with torch.no_grad():
-            text_embeddings = self.model.encode(
-                texts,
-                convert_to_tensor=True,
-                device=self.device,
-                show_progress_bar=False
-            )
-
-        return text_embeddings
-
-    def compute_contrastive_loss(
-        self,
-        image_embeddings: torch.Tensor,
-        text_embeddings: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Compute bidirectional contrastive loss between image and text embeddings.
-
-        Args:
-            image_embeddings: Tensor of shape [B, embedding_dim]
-            text_embeddings: Tensor of shape [B, embedding_dim]
-
-        Returns:
-            Tuple of (image_to_text_loss, text_to_image_loss)
-        """
-        batch_size = image_embeddings.shape[0]
-
-        # Normalize embeddings if specified
-        if self.normalize_embeddings:
-            image_embeddings = F.normalize(image_embeddings, p=2, dim=1)
-            text_embeddings = F.normalize(text_embeddings, p=2, dim=1)
-
-        # Compute similarity matrix
-        # Shape: [B, B] where entry (i,j) is similarity between image i and text j
-        similarity_matrix = torch.matmul(image_embeddings, text_embeddings.t()) / self.temperature
-
-        # Create labels for contrastive loss (diagonal should be positive pairs)
-        labels = torch.arange(batch_size, device=self.device)
-
-        # Image-to-text loss: for each image, text at same index should have highest similarity
-        image_to_text_loss = F.cross_entropy(similarity_matrix, labels)
-
-        # Text-to-image loss: for each text, image at same index should have highest similarity
-        text_to_image_loss = F.cross_entropy(similarity_matrix.t(), labels)
-
-        return image_to_text_loss, text_to_image_loss
 
     def forward(
         self,
         generated_images: torch.Tensor,
-        text_descriptions: Union[List[str], torch.Tensor],
-        return_similarities: bool = False
-    ) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Compute CLIP loss between generated images and text descriptions.
+        text_descriptions: List[str]
+    ) -> torch.Tensor:
+        # 1. Preprocessing delle immagini (differenziabile)
+        if generated_images.min() < 0:
+            generated_images = (generated_images + 1.0) / 2.0
+        processed_images = self.image_transform(generated_images)
 
-        Args:
-            generated_images: Generated images tensor of shape [B, C, H, W]
-            text_descriptions: List of text descriptions or tokenized text tensor
-            return_similarities: Whether to return similarity scores along with loss
+        # 2. Preprocessing del testo (non differenziabile, solo tokenizzazione)
+        with torch.no_grad():
+            text_inputs = self.processor(
+                text=text_descriptions,
+                return_tensors="pt",
+                padding=True,
+            ).to(self.device)
 
-        Returns:
-            CLIP loss (scalar tensor) or (loss, similarity_matrix) if return_similarities=True
-        """
-        # Handle text input
-        if isinstance(text_descriptions, torch.Tensor):
-            # If tokenized text is provided, you'll need to decode it first
-            # This is a placeholder - you'd need to implement text decoding based on your tokenizer
-            raise NotImplementedError("Tokenized text input not yet supported. Please provide text as List[str]")
-
-        # Encode images and texts
-        image_embeddings = self.encode_images(generated_images)
-        text_embeddings = self.encode_texts(text_descriptions)
-
-        # Compute contrastive losses
-        img_to_text_loss, text_to_img_loss = self.compute_contrastive_loss(
-            image_embeddings, text_embeddings
+        # --- LA MODIFICA CRUCIALE E FINALE ---
+        # Chiamiamo il metodo `forward` principale del modello invece delle funzioni helper.
+        # Questo è il modo più diretto e garantisce che il grafo sia preservato.
+        outputs = self.model(
+            input_ids=text_inputs.input_ids,
+            attention_mask=text_inputs.attention_mask,
+            pixel_values=processed_images,
+            return_loss=False # Calcoleremo la loss manualmente dai logits
         )
 
-        # Total CLIP loss is the sum of both directions
-        total_loss = (img_to_text_loss + text_to_img_loss) / 2.0
+        # Estraiamo i logits (similarità scalate) direttamente dall'output
+        logits_per_image = outputs.logits_per_image
+        logits_per_text = outputs.logits_per_text
 
-        if return_similarities:
-            # Compute similarity matrix for analysis
-            if self.normalize_embeddings:
-                image_embeddings = F.normalize(image_embeddings, p=2, dim=1)
-                text_embeddings = F.normalize(text_embeddings, p=2, dim=1)
-            similarity_matrix = torch.matmul(image_embeddings, text_embeddings.t())
-            return total_loss, similarity_matrix
+        # 4. Calcolo della loss contrastiva (simmetrica)
+        batch_size = generated_images.shape[0]
+        labels = torch.arange(batch_size, device=self.device)
 
-        return total_loss
+        loss_img = F.cross_entropy(logits_per_image, labels)
+        loss_txt = F.cross_entropy(logits_per_text, labels)
 
-
-class CLIPLossWithFeatures(CLIPLoss):
-    """
-    Extended CLIP loss that can also work with intermediate feature representations
-    instead of just final images. Useful for training at multiple scales or with
-    feature-level supervision.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        # Add a feature projection layer to map arbitrary feature dimensions
-        # to the CLIP embedding dimension (typically 512 for ViT-B/32)
-        self.feature_projector = None
-
-    def set_feature_projector(self, input_dim: int, output_dim: int = 512):
-        """
-        Set up a feature projector to map feature representations to CLIP embedding space.
-
-        Args:
-            input_dim: Dimension of input features
-            output_dim: Dimension of CLIP embeddings (usually 512)
-        """
-        self.feature_projector = nn.Sequential(
-            nn.Linear(input_dim, output_dim * 2),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(output_dim * 2, output_dim),
-            nn.LayerNorm(output_dim)
-        ).to(self.device)
-
-    def forward_features(
-        self,
-        image_features: torch.Tensor,
-        text_descriptions: List[str],
-        return_similarities: bool = False
-    ) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Compute CLIP loss using image features instead of raw images.
-
-        Args:
-            image_features: Image feature representations [B, feature_dim]
-            text_descriptions: List of text descriptions
-            return_similarities: Whether to return similarity scores
-
-        Returns:
-            CLIP loss or (loss, similarities)
-        """
-        if self.feature_projector is None:
-            raise ValueError("Feature projector not set. Call set_feature_projector() first.")
-
-        # Project features to CLIP embedding space
-        projected_features = self.feature_projector(image_features)
-
-        # Encode texts
-        text_embeddings = self.encode_texts(text_descriptions)
-
-        # Compute contrastive losses
-        img_to_text_loss, text_to_img_loss = self.compute_contrastive_loss(
-            projected_features, text_embeddings
-        )
-
-        total_loss = (img_to_text_loss + text_to_img_loss) / 2.0
-
-        if return_similarities:
-            if self.normalize_embeddings:
-                projected_features = F.normalize(projected_features, p=2, dim=1)
-                text_embeddings = F.normalize(text_embeddings, p=2, dim=1)
-            similarity_matrix = torch.matmul(projected_features, text_embeddings.t())
-            return total_loss, similarity_matrix
+        total_loss = (loss_img + loss_txt) / 2.0
 
         return total_loss
-
-
-# Example usage and utility functions
-def create_clip_loss(
-    model_name: str = "clip-ViT-B-32",
-    temperature: float = 0.07,
-    device: Optional[str] = None
-) -> CLIPLoss:
-    """
-    Factory function to create a CLIP loss instance with common defaults.
-
-    Args:
-        model_name: SentenceTransformer model name
-        temperature: Temperature for contrastive learning
-        device: Device to use
-
-    Returns:
-        Configured CLIPLoss instance
-    """
-    return CLIPLoss(
-        model_name=model_name,
-        temperature=temperature,
-        device=device,
-        normalize_embeddings=True
-    )
-
-
-def test_clip_loss():
-    """
-    Simple test function to verify CLIP loss functionality.
-    """
-    # Create dummy data
-    batch_size = 4
-    images = torch.randn(batch_size, 3, 256, 256)  # Random images
-    texts = [
-        "a red pokemon with fire abilities",
-        "a blue water type pokemon",
-        "a green grass pokemon in a forest",
-        "a yellow electric pokemon with lightning"
-    ]
-
-    # Create CLIP loss
-    clip_loss = create_clip_loss()
-
-    # Compute loss
-    try:
-        loss = clip_loss(images, texts)
-        print(f"CLIP Loss computed successfully: {loss.item():.4f}")
-
-        # Test with similarity return
-        loss, similarities = clip_loss(images, texts, return_similarities=True)
-        print(f"Similarity matrix shape: {similarities.shape}")
-        print(f"Diagonal similarities (should be highest): {torch.diag(similarities)}")
-
-    except Exception as e:
-        print(f"Error computing CLIP loss: {e}")
 
 
 if __name__ == "__main__":
-    test_clip_loss()
+    print("--- Esecuzione test per la classe SimpleCLIPLoss ---")
+
+    # 1. Setup del test
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Dispositivo di test: {device}")
+
+        # 2. Istanziazione della classe di loss
+    clip_loss_fn = CLIPLoss(device=device)
+    print("✅ Istanza di SimpleCLIPLoss creata con successo.")
+
+    # 3. Creazione di dati di input fittizi (simulando un GAN)
+    batch_size = 4
+    # Usiamo una dimensione diversa da 224x224 per testare il resize
+    image_size = 128
+
+    # Immagini finte in range [-1, 1] con requires_grad=True per testare la backprop
+    fake_images = torch.tanh(torch.randn(
+        batch_size, 3, image_size, image_size, requires_grad=True
+    )).to(device)
+
+    fake_texts = [
+        "una foto di un gatto rosso che dorme",
+        "un disegno di una casa blu sotto la pioggia",
+        "un cane verde che gioca con una palla",
+        "un paesaggio montano al tramonto"
+    ]
+    print(f"Creati dati fittizi: immagini {fake_images.shape}, {len(fake_texts)} testi.")
+
+    # 4. Esecuzione del forward pass
+    try:
+        loss = clip_loss_fn(fake_images, fake_texts)
+        print("✅ Forward pass completato con successo.")
+    except Exception as e:
+        print(f"❌ Errore durante il forward pass: {e}")
+        exit()
+
+    # 5. Verifica dell'output e dei gradienti
+    print(f"Loss calcolata: {loss.item():.4f}")
+
+    # Controllo 1: La loss è uno scalare?
+    assert loss.ndim == 0, "Errore: la loss non è uno scalare."
+    print("✅ La loss è uno scalare.")
+
+    # Controllo 2 (CRITICO): La loss ha un grafo computazionale?
+    assert loss.requires_grad, "ERRORE CRITICO: La loss non ha `requires_grad=True`. I gradienti non possono fluire."
+    print("✅ La loss ha `requires_grad=True`.")
+
+    # Controllo 3 (CRITICO): La backpropagation funziona?
+    try:
+        loss.backward()
+        print("✅ Backward pass completato con successo.")
+
+        # Controlliamo se il tensore delle immagini ha ricevuto un gradiente
+        assert fake_images.grad is not None, "ERRORE CRITICO: Nessun gradiente è stato propagato alle immagini di input."
+        assert fake_images.grad.shape == fake_images.shape, "Le dimensioni del gradiente non corrispondono a quelle dell'input."
+        print("✅ I gradienti sono stati propagati correttamente al tensore delle immagini.")
+
+    except Exception as e:
+        print(f"❌ Errore durante il backward pass o il controllo dei gradienti: {e}")
+        exit()
+
+    print("\n--- ✅ Tutti i test sono stati superati con successo! ---")
