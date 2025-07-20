@@ -25,15 +25,14 @@ class ImageCrossAttention(nn.Module):
         query_seq = image_features.view(B, C, H * W).permute(0, 2, 1)
         query_norm = self.layer_norm(query_seq)
 
-        # 2. Prepara la maschera di padding per l'attenzione
-        # La maschera di HuggingFace è 1 per i token reali, 0 per il padding.
-        # MultiheadAttention si aspetta True per le posizioni da ignorare.
+        # Prepare the padding mask from the attention mask
+        # The HuggingFace mask is 1 for real tokens, 0 for padding.
+        # MultiheadAttention expects True for positions to ignore.
         if key_padding_mask is not None:
             mask = (key_padding_mask == 0)
         else:
             mask = None
 
-        # 3. Applica l'attenzione
         attn_output, attn_weights = self.attention(
             query=query_norm,
             key=text_features,
@@ -43,7 +42,7 @@ class ImageCrossAttention(nn.Module):
         )
         # attn_output: (B, H*W, C)
 
-        # 4. Riconverti l'output nella forma spaziale originale
+        # Convert output back into its original size
         # (B, H*W, C) -> (B, C, H*W) -> (B, C, H, W)
         attn_output_spatial = attn_output.permute(0, 2, 1).view(B, C, H, W)
 

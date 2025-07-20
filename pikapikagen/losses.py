@@ -63,14 +63,12 @@ class SobelLoss(nn.Module):
     def __init__(self):
         super(SobelLoss, self).__init__()
         # Sobel kernels for edge detection
-        kernel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32).view(1, 1, 3, 3)
-        kernel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32).view(1, 1, 3, 3)
-        self.register_buffer("kernel_x", kernel_x)
-        self.register_buffer("kernel_y", kernel_y)
+        self.kernel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32).view(1, 1, 3, 3)
+        self.kernel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32).view(1, 1, 3, 3)
         self.l1 = nn.L1Loss()
 
         # Grayscale conversion weights (ITU-R BT.601)
-        self.register_buffer("rgb_to_gray_weights", torch.tensor([0.299, 0.587, 0.114]).view(1, 3, 1, 1))
+        self.rgb_to_gray_weights = torch.tensor([0.299, 0.587, 0.114]).view(1, 3, 1, 1)
 
     def _get_edges(self, img):
         """
@@ -80,20 +78,16 @@ class SobelLoss(nn.Module):
         Returns:
             Gradient magnitude map [B, 1, H, W].
         """
-        # Ensure input is 4D
-        if img.dim() != 4:
-            raise ValueError(f"Expected 4D input (got {img.dim()}D)")
 
         # Convert from [-1, 1] to [0, 1]
         img = (img + 1.0) / 2.0
 
         # Convert to grayscale
-        # The weights need to be on the same device as the image.
-        grayscale_img = F.conv2d(img, self.rgb_to_gray_weights.to(img.device)) # type: ignore
+        grayscale_img = F.conv2d(img, self.rgb_to_gray_weights.to(img.device))
 
-        # Apply Sobel filters. Kernels also need to be on the correct device.
-        grad_x = F.conv2d(grayscale_img, self.kernel_x.to(img.device), padding=1) # type: ignore
-        grad_y = F.conv2d(grayscale_img, self.kernel_y.to(img.device), padding=1) # type: ignore
+        # Apply Sobel filters
+        grad_x = F.conv2d(grayscale_img, self.kernel_x.to(img.device), padding=1)
+        grad_y = F.conv2d(grayscale_img, self.kernel_y.to(img.device), padding=1)
 
         # Compute gradient magnitude
         edges = torch.sqrt(grad_x**2 + grad_y**2 + 1e-6) # add epsilon for stability

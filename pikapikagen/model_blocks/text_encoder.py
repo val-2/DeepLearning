@@ -3,18 +3,17 @@ from transformers import AutoModel
 
 class TextEncoder(nn.Module):
     """
-    Encoder per processare il testo.
-    Usa gli embedding di bert-mini e li fa passare in un Transformer.
+    Text encoder
+    Uses bert-mini embeddings and passes them through a Transformer.
     """
     def __init__(self, model_name="prajjwal1/bert-mini", fine_tune_embeddings=True):
         super().__init__()
-        # Carica il modello bert-mini pre-addestrato per estrarre gli embedding
+        # Load the pre-trained bert-mini model for embeddings
         bert_mini_model = AutoModel.from_pretrained(model_name)
 
-        # Estrae lo strato di embedding
         self.embedding = bert_mini_model.embeddings
 
-        # Imposta se fare il fine-tuning degli embedding durante il training
+        # Set whether to fine-tune the embeddings during training
         for param in self.embedding.parameters():
             param.requires_grad = fine_tune_embeddings
 
@@ -24,18 +23,18 @@ class TextEncoder(nn.Module):
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=4)
 
     def forward(self, token_ids, attention_mask=None):
-        # 1. Ottieni gli embedding dai token ID
+        # Get the embeddings from the tokens
         # Shape: (batch_size, seq_len) -> (batch_size, seq_len, embedding_dim)
         embedded_text = self.embedding(token_ids)
 
-        # 2. Prepara la maschera di padding per il TransformerEncoder
-        # La maschera di HuggingFace è 1 per i token reali, 0 per il padding.
-        # TransformerEncoder si aspetta True per le posizioni da ignorare (padding).
+        # Prepare the padding mask for TransformerEncoder
+        # The HuggingFace mask is 1 for real tokens, 0 for padding.
+        # TransformerEncoder expects True for positions to ignore (padding).
         src_key_padding_mask = None
         if attention_mask is not None:
             src_key_padding_mask = (attention_mask == 0)
 
-        # 3. Passa gli embedding attraverso il Transformer Encoder con la maschera
+        # Pass the embeddings through the Transformer Encoder with the mask
         # Shape: (batch_size, seq_len, embedding_dim) -> (batch_size, seq_len, embedding_dim)
         encoder_output = self.transformer_encoder(
             src=embedded_text,

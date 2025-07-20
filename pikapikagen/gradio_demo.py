@@ -5,11 +5,12 @@ import numpy as np
 from PIL import Image
 from transformers import AutoTokenizer
 from model import Generator as PikaPikaGen
-from utils import denormalize_image, plot_attention_visualization
+from utils import denormalize_image
+from plots import plot_attention_visualization
 import os
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-CHECKPOINT_PATH = "training_output/models/checkpoint_epoch_150.pth"
+CHECKPOINT_PATH = "model_checkpoints/checkpoint_epoch_150.pth"
 TOKENIZER_NAME = "prajjwal1/bert-mini"
 
 
@@ -18,7 +19,7 @@ class PokemonGenerator:
 
     def __init__(self):
         self.device = DEVICE
-        self.tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME)
+        self.tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME)
 
         self._load_model()
 
@@ -303,15 +304,6 @@ def create_interface():
 if __name__ == "__main__":
     print("🎮 Starting PikaPikaGen Demo...")
 
-    if not pokemon_gen.model_loaded:
-        print("\n❌ Model not loaded! Please ensure you have:")
-        print("1. A trained checkpoint in 'training_output/models/'")
-        print("2. The model.py file with PikaPikaGen class")
-        print("3. All required dependencies installed")
-        print("\nTo train the model, run the PikaPikaGen.ipynb notebook first.")
-        exit(1)
-
-    print("✅ Model loaded successfully!")
     print("🚀 Launching Gradio interface...")
 
     # Create and launch interface

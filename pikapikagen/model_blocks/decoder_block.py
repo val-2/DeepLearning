@@ -26,7 +26,7 @@ class DecoderBlock(nn.Module):
         # Upsample block as described in the instructions
         self.upsample_block = nn.Sequential(
             nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.GroupNorm(1, out_channels), # Equivalent to LayerNorm for feature map (N, C, H, W)
+            nn.GroupNorm(1, out_channels),
             nn.LeakyReLU(inplace=True)
         )
 
