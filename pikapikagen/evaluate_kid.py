@@ -20,7 +20,7 @@ from PIL import Image
 
 # Constants
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-CHECKPOINT_PATH = "training_output/models/checkpoint_epoch_150.pth"
+CHECKPOINT_PATH = "pikapikagen/model_checkpoints/checkpoint_epoch_150.pth"
 TOKENIZER_NAME = "prajjwal1/bert-mini"
 
 class PokemonKIDEvaluator:
