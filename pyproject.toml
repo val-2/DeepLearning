@@ -1,7 +1,7 @@
 [project]
 name = "pikapikagen"
 version = "0.1.0"
-description = "Add your description here"
+description = "Text-to-Image Pokemon Generation using Transformer + CNN"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -11,7 +11,7 @@ dependencies = [
     "jupyterlab>=4.4.5",
     "matplotlib>=3.10.3",
     "pandas>=2.3.0",
-    "sentence-transformers>=5.0.0",
+    "torch>=2.7.1",
     "torch-fidelity>=0.3.0",
     "torchvision>=0.22.1",
     "transformers>=4.53.0",
