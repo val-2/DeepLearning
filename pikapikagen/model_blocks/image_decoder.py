@@ -67,9 +67,9 @@ class ImageDecoder(nn.Module):
         attn_scores = self.initial_context_scorer(encoder_output_full)
 
         # Apply attention mask before Softmax.
-        # Set the scores of the padding tokens to -inf.
+        # Set the scores of the padding tokens, where attention mask is 0, to -inf.
         # The mask is (B, seq_len), the scores (B, seq_len, 1)
-        # The broadcast takes care of the dimensions.
+        # The unsqueeze takes care of the dimension diference.
         attn_scores.masked_fill_(attention_mask.unsqueeze(-1) == 0, -1e9)
 
         # attention_weights.shape: (B, seq_len, 1)

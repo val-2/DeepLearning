@@ -80,12 +80,11 @@ class PokemonGenerator:
             text_ids = tokens['input_ids'].repeat(num_samples, 1).to(self.device)
             attention_mask = tokens['attention_mask'].repeat(num_samples, 1).to(self.device)
 
-            # Il modello restituisce tensori con batch_size = num_samples
             generated_256, generated_64, attention_maps, initial_weights = self.generator(
                 text_ids, attention_mask, return_attentions=True
             )
 
-            # Converti i tensori in immagini PIL per l'output finale
+            # Convert tensors to PIL images
             output_images = []
             images_to_process = []
             if resolution in ["256x256", "both"]:
@@ -94,7 +93,6 @@ class PokemonGenerator:
                 images_to_process.append(generated_64)
 
             for img_batch in images_to_process:
-                # Denormalizza l'intero batch in una sola volta
                 img_batch_denorm = denormalize_image(img_batch.cpu())
                 for i in range(num_samples):
                     img_pil = self._tensor_to_pil(img_batch_denorm[i])
@@ -102,56 +100,46 @@ class PokemonGenerator:
 
             attention_plot = None
             if show_attention:
-                # ### <<< MODIFICA CHIAVE 1: Creare la directory se non esiste
+                # Create directory if it doesn't exist
                 output_dir = "attention_visualizations"
                 os.makedirs(output_dir, exist_ok=True)
 
-                # ### <<< MODIFICA CHIAVE 2: Creare un ID più descrittivo per il file
-                # Per evitare di sovrascrivere lo stesso file "demo_0"
+                # Create a more descriptive ID for the file
+                # To avoid overwriting the same file with the same name
                 plot_id = description.strip().replace(" ", "_")[:30]
 
 
-                # Usa il primo campione per la visualizzazione dell'attenzione
+                # Use the first sample for the attention visualization
                 attention_plot = plot_attention_visualization(
-                    # Argomenti di identificazione
-                    epoch=0, # Epoch non è rilevante in un contesto demo
+                    epoch=0,
                     set_name="demo",
                     output_dir=output_dir,
 
-                    # ### <<< MODIFICA CHIAVE 3: Passare il tensore grezzo, non la lista di PIL
-                    generated_images=generated_256, # Usiamo l'output ad alta risoluzione
+                    generated_images=generated_256,
 
-                    # Dati batch completi dal modello
+                    # Full batch data from the model
                     decoder_attention_maps=attention_maps,
                     initial_context_weights=initial_weights,
 
-                    # Input batch completo
                     token_ids=text_ids,
                     attention_mask=attention_mask,
                     tokenizer=self.tokenizer,
 
-                    # Metadati per il campione specifico (il primo)
+                    # Metadata for the specific sample
                     description=description,
                     pokemon_id=plot_id,
 
-                    # Opzioni
                     sample_idx=0,
                     show_inline=False
                 )
-                # La funzione salva un file, ma non restituisce un oggetto plot.
-                # Se si volesse mostrare il plot in un'interfaccia (es. Gradio/Streamlit),
-                # la funzione plot_attention_visualization dovrebbe restituire il path del file salvato.
-                # Per ora, lasciamo attention_plot a None come indicatore.
 
             return output_images, attention_plot
 
 
-# Initialize the generator
-print("🚀 Initializing PikaPikaGen Demo...")
+print("Initializing PikaPikaGen Demo...")
 pokemon_gen = PokemonGenerator()
 
 def generate_pokemon_interface(description, num_samples, show_attention, resolution):
-    """Main interface function for Gradio"""
     images, attention_plot = pokemon_gen.generate_pokemon(
         description=description,
         num_samples=num_samples,
@@ -160,20 +148,17 @@ def generate_pokemon_interface(description, num_samples, show_attention, resolut
     )
 
     if images is None:
-        return [], attention_plot  # attention_plot contains error message in this case
+        return [], attention_plot  # attention_plot contains error message if error
 
-    status_msg = f"✅ Generated {len(images)} Pokemon sprites"
+    status_msg = f"Generated {len(images)} Pokemon sprites"
     if resolution == "both":
         status_msg += f" ({num_samples} at 256x256 + {num_samples} at 64x64)"
     else:
         status_msg += f" at {resolution}"
 
-    return images, attention_plot if attention_plot else status_msg
+    return images, attention_plot
 
-# Create Gradio interface
 def create_interface():
-    """Create the Gradio interface"""
-
     with gr.Blocks(
         title="PikaPikaGen: AI Pokemon Generator",
         theme=gradio.themes.Soft(),
@@ -199,8 +184,7 @@ def create_interface():
         gr.HTML("""
         <div class="main-header">🎮 PikaPikaGen: AI Pokemon Generator</div>
         <div class="description">
-            Create unique Pokemon sprites from text descriptions using advanced AI!<br>
-            Powered by Transformer attention and CNN generation.
+            Creation of Pokemon sprites from text descriptions using Transformer attention and CNN generation.
         </div>
         """)
 
@@ -218,19 +202,19 @@ def create_interface():
                 with gr.Row():
                     num_samples = gr.Slider(
                         minimum=1, maximum=8, value=4, step=1,
-                        label="Number of Samples"
+                        label="Number of samples"
                     )
 
                     resolution = gr.Radio(
                         choices=["256x256", "64x64", "both"],
                         value="256x256",
-                        label="Output Resolution"
+                        label="Output resolution"
                     )
 
                 show_attention = gr.Checkbox(
-                    label="Show Attention Visualization",
+                    label="Show attention visualization",
                     value=True,
-                    info="Visualize which words the AI focuses on"
+                    info="Visualize which words the model focuses on"
                 )
 
                 generate_btn = gr.Button(
@@ -239,19 +223,11 @@ def create_interface():
                     size="lg"
                 )
 
-                gr.Markdown("### 💡 Tips")
-                gr.Markdown("""
-                - Be descriptive: mention colors, types, features
-                - Try: "electric mouse", "ice dragon", "grass cat"
-                - Experiment with combinations!
-                - Use Pokemon types: fire, water, grass, electric, etc.
-                """)
-
             with gr.Column(scale=2):
                 gr.Markdown("### 🎨 Generated Pokemon")
 
                 output_gallery = gr.Gallery(
-                    label="Generated Pokemon Sprites",
+                    label="Generated Pokemon sprites",
                     show_label=True,
                     elem_id="gallery",
                     columns=2,
@@ -261,13 +237,13 @@ def create_interface():
                 )
 
                 attention_output = gr.Image(
-                    label="Attention Visualization",
+                    label="Attention visualization",
                     show_label=True,
                     interactive=False
                 )
 
         # Examples section
-        gr.Markdown("### 🌟 Try These Examples")
+        gr.Markdown("### 🌟 Examples to try")
         gr.Examples(
             examples=[
                 ["A fire dragon with golden scales and red eyes", 4, True, "256x256"],
@@ -295,23 +271,19 @@ def create_interface():
         # Footer
         gr.Markdown("""
         ---
-        **PikaPikaGen** - Text-to-Image Pokemon Generation using Transformer + GAN Architecture
-        🔬 Research Project | 🎯 Deep Learning | 🎮 AI Art Generation
+        **PikaPikaGen** - Text-to-Image Pokemon Generation using Transformer + CNN
         """)
 
     return demo
 
 if __name__ == "__main__":
-    print("🎮 Starting PikaPikaGen Demo...")
-
-    print("🚀 Launching Gradio interface...")
+    print("Starting PikaPikaGen Demo...")
 
     # Create and launch interface
     demo = create_interface()
 
     demo.launch(
         server_name="0.0.0.0",  # Allow external access
-        server_port=7860,       # Default Gradio port
         share=False,            # Set to True for public sharing
         debug=False,
         show_error=True,

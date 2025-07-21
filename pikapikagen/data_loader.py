@@ -16,8 +16,8 @@ def create_training_setup(
     """
     Create a complete setup for training with dataset, dataloaders and fixed batches for visualization.
     """
-    assert 0 < test_set_size < 1.0, "test_set_size must be a float between 0 and 1"
-    assert 0 < val_set_size < 1.0, "val_set_size must be a float between 0 and 1"
+    assert 0 <= test_set_size < 1.0, "test_set_size must be a float between 0 and 1"
+    assert 0 <= val_set_size < 1.0, "val_set_size must be a float between 0 and 1"
     assert (test_set_size + val_set_size) < 1.0, "The sum of test and validation sizes must be less than 1"
 
     train_full_dataset = PokemonDataset(tokenizer=tokenizer, augmentation_transforms=train_augmentation_pipeline)
@@ -26,8 +26,7 @@ def create_training_setup(
 
     dataset_size = len(train_full_dataset)
 
-    # --- Deterministic index split ---
-    # 1. Create a random reproducible permutation
+    # Create a random reproducible permutation
     generator = torch.Generator().manual_seed(random_seed)
     shuffled_indices = torch.randperm(dataset_size, generator=generator)
 
@@ -35,7 +34,7 @@ def create_training_setup(
     test_count = math.ceil(test_set_size * dataset_size)
     train_count = dataset_size - val_count - test_count
 
-    # 3. Partition based on the computed splits
+    # Partition based on the computed splits
     train_indices = shuffled_indices[:train_count].tolist()
     test_indices = shuffled_indices[train_count : train_count + test_count].tolist()
     val_indices = shuffled_indices[train_count + test_count :].tolist()
