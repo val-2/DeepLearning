@@ -14,7 +14,7 @@ class ImageCrossAttention(nn.Module):
         )
         self.layer_norm = nn.LayerNorm(embed_dim)
 
-    def forward(self, image_features, text_features, key_padding_mask=None):
+    def forward(self, image_features, text_features, attention_mask=None):
         # query: (B, C, H, W) - Image features
         # key/value: (B, seq_len, embed_dim) - Text encoder output
         # key_padding_mask: (B, seq_len) - Attention mask from the tokenizer
@@ -28,16 +28,16 @@ class ImageCrossAttention(nn.Module):
         # Prepare the padding mask from the attention mask
         # The HuggingFace mask is 1 for real tokens, 0 for padding.
         # MultiheadAttention expects True for positions to ignore.
-        if key_padding_mask is not None:
-            mask = (key_padding_mask == 0)
+        if attention_mask is not None:
+            key_padding_mask = (attention_mask == 0)
         else:
-            mask = None
+            key_padding_mask = None
 
         attn_output, attn_weights = self.attention(
             query=query_norm,
             key=text_features,
             value=text_features,
-            key_padding_mask=mask,
+            key_padding_mask=key_padding_mask,
             need_weights=True
         )
         # attn_output: (B, H*W, C)

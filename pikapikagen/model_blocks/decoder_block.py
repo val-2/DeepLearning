@@ -45,7 +45,7 @@ class DecoderBlock(nn.Module):
             attn_output, attn_weights = self.cross_attention(
                 image_features=x_adapted,
                 text_features=encoder_output,
-                key_padding_mask=attention_mask
+                attention_mask=attention_mask
             )
 
             # Concatenates the features with the cross-attention output,
