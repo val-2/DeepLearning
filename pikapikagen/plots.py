@@ -47,7 +47,7 @@ def generate_attention_data(model, tokenizer, batch, device):
         pokemon_id = batch["idx"][0]
         description = batch["description"][0]
 
-        generated_image, attention_maps, initial_context_weights = model(
+        generated_image, _, attention_maps, initial_context_weights = model(
             token_ids, attention_mask, return_attentions=True
         )
 
