@@ -22,7 +22,14 @@ def save_attention_visualization(
             set_name=set_name,
             output_dir=output_dir,
             show_inline=show_inline,
-            **attention_data,
+            generated_images=attention_data['generated_image'].unsqueeze(0),  # Make it a batch
+            decoder_attention_maps=attention_data['decoder_attention_maps'],
+            initial_context_weights=attention_data['initial_context_weights'].unsqueeze(0),  # Make it a batch
+            token_ids=batch["text"].to(device),
+            attention_mask=batch["attention_mask"].to(device),
+            tokenizer=tokenizer,
+            description=attention_data['description'],
+            pokemon_id=attention_data['pokemon_id'],
         )
         print(f"Epoch {epoch}: Attention visualization saved for Pokémon #{attention_data['pokemon_id']}.")
     else:
