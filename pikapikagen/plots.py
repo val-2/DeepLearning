@@ -22,7 +22,14 @@ def save_attention_visualization(
             set_name=set_name,
             output_dir=output_dir,
             show_inline=show_inline,
-            **attention_data,
+            generated_images=attention_data['generated_image'],
+            decoder_attention_maps=attention_data['decoder_attention_maps'],
+            initial_context_weights=attention_data['initial_context_weights'],
+            token_ids=batch["text"].to(device),
+            attention_mask=batch["attention_mask"].to(device),
+            tokenizer=tokenizer,
+            description=attention_data['description'],
+            pokemon_id=attention_data['pokemon_id'],
         )
         print(f"Epoch {epoch}: Attention visualization saved for Pokémon #{attention_data['pokemon_id']}.")
     else:
@@ -47,7 +54,7 @@ def generate_attention_data(model, tokenizer, batch, device):
         pokemon_id = batch["idx"][0]
         description = batch["description"][0]
 
-        generated_image, attention_maps, initial_context_weights = model(
+        generated_images, _, attention_maps, initial_context_weights = model(
             token_ids, attention_mask, return_attentions=True
         )
 
@@ -72,7 +79,7 @@ def generate_attention_data(model, tokenizer, batch, device):
         return None
 
     return {
-        "generated_image": generated_image.cpu(),
+        "generated_images": generated_images.cpu(),
         "decoder_attention_maps": [m.cpu() for m in decoder_attention_maps],
         "initial_context_weights": initial_context_weights.cpu(),
         "display_tokens": display_tokens,
