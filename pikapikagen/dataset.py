@@ -59,7 +59,7 @@ class PokemonDataset(Dataset):
     ):
         self.df = pd.read_csv(csv_path, encoding="utf-16 LE", delimiter="\t")
         self.image_dir = Path(image_dir)
-        print(f"Dataset caricato: {len(self.df)} Pokemon con descrizioni e immagini")
+        print(f"Dataset loaded: {len(self.df)} Pokemon with descriptions and images")
 
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -72,7 +72,7 @@ class PokemonDataset(Dataset):
                     augmentation_transforms,
                     transforms.Normalize(
                         mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]
-                    ),  # Normalizza a [-1, 1]
+                    ),  # Normalizes to [-1, 1]
                 ]
             )
         else:
@@ -82,7 +82,7 @@ class PokemonDataset(Dataset):
                     transforms.Resize((256, 256), antialias=True),
                     transforms.Normalize(
                         mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]
-                    ),  # Normalizza a [-1, 1]
+                    ),  # Normalizes to [-1, 1]
                 ]
             )
 
@@ -90,13 +90,13 @@ class PokemonDataset(Dataset):
         return len(self.df)
 
     def __getitem__(self, idx: int) -> PokemonSample:
-        # Ottieni la riga corrispondente
+        # Gets the corresponding row
         row = self.df.iloc[idx]
 
-        # === PREPROCESSING DEL TESTO ===
+        # === TEXT PREPROCESSING ===
         description = str(row["description"])
 
-        # Tokenizza il testo
+        # Tokenizes the text
         encoded = self.tokenizer(
             description,
             max_length=self.max_length,
@@ -105,26 +105,25 @@ class PokemonDataset(Dataset):
             return_tensors="pt",
         )
 
-        # Estrai token_ids e attention_mask
-        text_ids = encoded["input_ids"].squeeze(0)  # Rimuovi la dimensione batch
+        # Extracts token_ids and attention_mask
+        text_ids = encoded["input_ids"].squeeze(0)  # Removes the batch dimension
         attention_mask = encoded["attention_mask"].squeeze(0)
 
-        # === CARICAMENTO E PREPROCESSING DELL'IMMAGINE ===
-        # Costruisce il percorso dell'immagine
+        # === IMAGE LOADING AND PREPROCESSING ===
+        # Builds the image path
         image_filename = f"{row['national_number']:03d}.png"
         image_path = self.image_dir / image_filename
 
-        # Carica l'immagine
+        # Loads the image
         image_rgba = Image.open(image_path).convert("RGBA")
 
-        # Gestisce la trasparenza: ricombina l'immagine con uno sfondo bianco
+        # Handles transparency: combines the image with a white background
         background = Image.new("RGB", image_rgba.size, (255, 255, 255))
         background.paste(image_rgba, mask=image_rgba.split()[-1])
 
-        # Applica le trasformazioni finali (ToTensor, Resize, Normalize)
+        # Applies the final transformations (ToTensor, Resize, Normalize)
         image_tensor = self.final_transform(background)
 
-        # Costruisce il risultato (matches pokemon_dataset.py structure)
         sample = {
             "text": text_ids,
             "image": image_tensor,

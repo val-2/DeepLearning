@@ -1,12 +1,12 @@
 def denormalize_image(tensor):
     """
-    Denormalizza un tensore immagine dall'intervallo [-1, 1] a [0, 1] per la visualizzazione.
+    Denormalizes an image tensor from the range [-1, 1] to [0, 1] for visualization.
 
     Args:
-        tensor (torch.Tensor): Il tensore dell'immagine, con valori in [-1, 1].
+        tensor (torch.Tensor): The image tensor, with values in [-1, 1].
 
     Returns:
-        torch.Tensor: Il tensore denormalizzato con valori in [0, 1].
+        torch.Tensor: The denormalized tensor with values in [0, 1].
     """
     tensor = (tensor + 1) / 2
     return tensor.clamp(0, 1)

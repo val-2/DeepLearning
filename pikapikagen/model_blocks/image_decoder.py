@@ -3,10 +3,6 @@ import torch.nn as nn
 from model_blocks.decoder_block import DecoderBlock
 
 class ImageDecoder(nn.Module):
-    """
-    Decoder CNN (Generatore) che sintetizza l'immagine.
-    Questa versione usa l'attenzione per-step fin dall'inizio.
-    """
     def __init__(self, noise_dim, text_embed_dim, final_image_channels=3):
         super().__init__()
 
@@ -92,7 +88,7 @@ class ImageDecoder(nn.Module):
         # 4. Pass through the encoder blocks
         attention_maps = []
 
-        # Shared path for both resolutions (fino a 64x64)
+        # Shared path for both resolutions (until 64x64)
         for block in self.blocks_64:
             encoder_ctx = encoder_output_full if block.use_attention else None
             mask_ctx = attention_mask if block.use_attention else None
